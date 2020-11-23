@@ -80,7 +80,7 @@ def get_loader(dataset, data_augment=False, bsz=512, shuffle=True):
              transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
         dataset = torchvision.datasets.CIFAR10('files/', train=True, download=True,
                  transform=transform_train if data_augment else transform_test)
-        weights = make_weights_for_balanced_classes(dataset.train_labels, 10)
+        weights = make_weights_for_balanced_classes(dataset.targets, 10)
         weights = torch.DoubleTensor(weights)                                       
         sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, int(0.05*len(weights)))
         loader = torch.utils.data.DataLoader(dataset,
@@ -246,6 +246,8 @@ def main():
 
     l2_dict= attacker.compute_train_dictionary(eps=1, lp=2)
     linf_dict = attacker.compute_train_dictionary(eps=0.1, lp=np.infty)
+    if not os.path.exists('cifar_dicts'):
+        os.mkdir('cifar_dicts')
     serialize(l2_dict, 'cifar_dicts', 'l2_eps1.pkl')
     serialize(linf_dict, 'cifar_dicts', 'linf_eps0.1.pkl')
 
@@ -289,5 +291,5 @@ def reconstruct():
     set_trace()
     
 
-reconstruct()
-#main()
+#reconstruct()
+main()
