@@ -112,7 +112,7 @@ class Trainer(object):
         for i in range(num_epochs): 
             for batch_idx, data in enumerate(self.train_loader):
                 bx, by = data[0], data[1]
-                #bx = bx.reshape((bx.shape[0], -1))
+                bx = bx.reshape((bx.shape[0], -1))
                 output = self.net.forward(bx.float())
                 loss = loss_fn(output, by)
                 self.optimizer.zero_grad()
@@ -124,7 +124,7 @@ class Trainer(object):
                 print("[{}] Loss: {}. Train Accuracy: {}%. Test Accuracy: {}%.".format(i, 
                     loss, train_acc, test_acc))
 
-        torch.save(self.net.state_dict(), 'pretrained_model_cnn.pth')
+        torch.save(self.net.state_dict(), 'pretrained_model.pth')
 
     def evaluate(self, test=True):
         if test:
@@ -135,7 +135,7 @@ class Trainer(object):
             loss_fn = nn.CrossEntropyLoss(size_average=False)
             num_correct = 0
             for (batch_X, batch_y) in data_loader:
-                #batch_X = batch_X.reshape((batch_X.shape[0], -1))
+                batch_X = batch_X.reshape((batch_X.shape[0], -1))
                 if torch.cuda.is_available():
                     batch_X = batch_X.cuda()
                     batch_y = batch_y.cuda() 
@@ -237,8 +237,8 @@ def ricker_matrix(width, resolution, n_atoms):
     return D
 
 def main():
-    #trainer = Trainer()
-    #trainer.train(10, 0.05)
+    trainer = Trainer()
+    trainer.train(10, 0.01)
 
     attacker = DictionaryAttacker()
 
