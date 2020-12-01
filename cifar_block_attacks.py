@@ -11,46 +11,8 @@ import pickle
 from torchvision import transforms, datasets
 from torch.utils.data import DataLoader, Dataset
 from cvxpy.atoms.norm import norm
+from neural_net import NN, CNN
 from pdb import set_trace
-
-class NN(nn.Module):
-
-    def __init__(self, d, m):
-        super().__init__()
-        self.d = d
-        self.m = m
-        self.lin1 = nn.Linear(self.d, self.m)
-        self.lin2 = nn.Linear(self.m, self.m)
-        self.lin3 = nn.Linear(self.m, 10)
-        self.relu = nn.ReLU()
-
-    def forward(self, x):
-        out = x
-        out = self.relu(self.lin1(out))
-        out = self.relu(self.lin2(out))
-        out = self.lin3(out)
-        return out
-
-class CNN(nn.Module):
-
-    def __init__(self, m, num_layers, in_channels=3, num_classes=10):
-        super().__init__()
-        layers = []
-        for i in range(num_layers):
-            conv2d = nn.Conv2d(in_channels, m, kernel_size=3, padding=1)
-            layers += [conv2d, nn.ReLU()]
-            in_channels = m
-        self.features = nn.ModuleList(layers)
-        self.avgpool = nn.AdaptiveAvgPool2d((7, 7))
-        self.classifier = nn.Linear(m*7*7, num_classes)
-
-    def forward(self, x):
-        for layer in self.features:
-            x = layer(x)
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
-        x = self.classifier(x)  
-        return x
 
 def make_weights_for_balanced_classes(images, nclasses):
     count = [0] * nclasses
@@ -237,8 +199,8 @@ def ricker_matrix(width, resolution, n_atoms):
     return D
 
 def main():
-    trainer = Trainer()
-    trainer.train(10, 0.01)
+    #trainer = Trainer()
+    #trainer.train(10, 0.01)
 
     attacker = DictionaryAttacker()
 
