@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+from pdb import set_trace
+
 class NN(nn.Module):
 
     def __init__(self, d, m, num_classes):
@@ -29,13 +31,19 @@ class CNN(nn.Module):
             layers += [conv2d, nn.ReLU()]
             in_channels = m
         self.features = nn.ModuleList(layers)
+        self.maxpool = nn.MaxPool2d(3, stride=2)
         self.avgpool = nn.AdaptiveAvgPool2d((7, 7))
-        self.classifier = nn.Linear(m*7*7, num_classes)
+        self.classifier = nn.Linear(m*9*8, num_classes)
 
     def forward(self, x):
-        for layer in self.features:
-            x = layer(x)
-        x = self.avgpool(x)
+        x = self.features[0](x)
+        x = self.features[1](x)
+        x = self.maxpool(x)
+        x = self.features[2](x)
+        x = self.maxpool(x)
+        #for layer in self.features:
+        #    x = layer(x)
+        #x = self.maxpool(x)
         x = torch.flatten(x, 1)
         x = self.classifier(x)  
         return x
