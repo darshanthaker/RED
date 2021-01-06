@@ -26,11 +26,11 @@ from torch.utils.data import DataLoader, Dataset
 SIGNAL = 'signal'
 ATTACK = 'attack'
 ATTACK_F = 'attack_f'
-EPS = 15
-#MEAN = 0.2728
-#STD = 0.2453
-MEAN = 69.5591
-STD = 62.5569
+EPS = 0.1
+MEAN = 0.2728
+STD = 0.2453
+#MEAN = 69.5591
+#STD = 62.5569
 SIGNAL_BIDXS = list()
 ATTACK_BIDXS = list()
 ATTACK_BIDXS_F = list()
@@ -57,7 +57,7 @@ class YaleDataset(Dataset):
             x = self.X[idx, :]
             y = self.y[idx]
 
-            x = utils.to_tensor_custom(x)
+            #x = utils.to_tensor_custom(x)
 
             if self.transform:
                 x = self.transform(x)
@@ -87,7 +87,7 @@ class Trainer(object):
         self.N_test = raw_test_X.shape[0]
 
         transform = transforms.Compose(
-                [#transforms.ToTensor(),
+                [transforms.ToTensor(),
                  transforms.Normalize((MEAN), (STD))])
         self.train_dataset = YaleDataset(raw_train_X, self.train_y, transform=transform)
         self.test_dataset = YaleDataset(raw_test_X, self.test_y, transform=transform)
@@ -211,9 +211,9 @@ class Trainer(object):
             loss = loss_fn(self.net((bx + delta).float()), by)
             loss.backward()
             if lp == np.infty:
-                bx_attack = (eps * delta.grad.detach().sign()).numpy()
+                bx_attack = (bx + eps * delta.grad.detach().sign()).numpy()
             elif lp == 2:
-                bx_attack = (eps * delta.grad.detach() / delta.grad.detach().norm()).numpy()
+                bx_attack = (bx + eps * delta.grad.detach() / delta.grad.detach().norm()).numpy()
             return bx_attack
 
 def compute_dictionary(train, normalize_cols=True):
@@ -329,19 +329,24 @@ def get_objective(concat_dict, c, train, attack_lens, obj_type, dict_in_obj=Fals
     elif obj_type == 'hierarchical':
         for pid in range(len(train)):
             aid_blocks = list()
+            i_term1 = 0
             for aid in range(len(attack_lens)): 
                 aid_block = get_block(c, (pid, aid), ATTACK_F)
                 aid_blocks.append(aid_block)
+                #i_term1 += cp.square(norm(aid_block, p=2))
                 objective += norm(aid_block, p=2)
             pid_block = get_block(c, pid, SIGNAL)
+            #i_term1 += cp.square(norm(pid_block, p=2))
+            #i_term1 = cp.sqrt(i_term1)
             i_term1 = hstack([pid_block] + aid_blocks)
-            #objective += norm(i_term1, p=2)
+            #objective += i_term1
+            objective += norm(i_term1, p=2)
     return objective
 
 def full_lp_reconstruct(trainer, lp, dict_in_obj=True, finegrained=False):
     #test_idx = list(range(trainer.N_test))
     test_idx = list(range(100))
-    test_adv = trainer.test_lp_attack(lp, test_idx, EPS, realizable=True)
+    test_adv = trainer.test_lp_attack(lp, test_idx, EPS, realizable=False)
 
     opts = list()
     epss = list()
@@ -393,7 +398,8 @@ def lp_reconstruct(trainer, x_adv, lp, dict_in_obj=True, finegrained=False):
 
     prob = cp.Problem(minimizer, constraints)
 
-    result = prob.solve(verbose=False, solver=cp.MOSEK)
+    result = prob.solve(verbose=True, solver=cp.MOSEK)
+    #result = prob.solve(verbose=False)
 
     opt = np.array(c.value)
 
