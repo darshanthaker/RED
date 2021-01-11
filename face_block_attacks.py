@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader, Dataset
 SIGNAL = 'signal'
 ATTACK = 'attack'
 ATTACK_F = 'attack_f'
-EPS = 0.1
+EPS = 0.02
 MEAN = 0.2728
 STD = 0.2453
 #MEAN = 69.5591
@@ -357,6 +357,20 @@ def full_lp_reconstruct(trainer, lp, dict_in_obj=True, finegrained=False):
             dict_in_obj=dict_in_obj, finegrained=finegrained)
         opts.append(opt)
         epss.append(eps)
+        block_norms = np.array([np.linalg.norm(opt[i:i+55]) for i in range(0, 6270, 55)])
+        c_s = block_norms[:38]
+        c_a = block_norms[38:]
+        markerline, stemlines, baseline = plt.stem(c_s, linefmt='grey', markerfmt='D')
+        plt.xlabel('Block #')
+        plt.ylabel('Norm')
+        plt.title('Signal coefficients: c_s')
+        plt.show()
+        plt.clf()
+        markerline, stemlines, baseline = plt.stem(c_a, linefmt='grey', markerfmt='D')
+        plt.xlabel('Block #')
+        plt.ylabel('Norm')
+        plt.title('Attack coefficients: c_a')
+        plt.show()
         set_trace()
     pickle.dump(opts, open('outs/opts_{}.pkl'.format(lp), 'wb'))
     pickle.dump(epss, open('outs/epss_{}.pkl'.format(lp), 'wb'))
@@ -375,6 +389,8 @@ def lp_reconstruct(trainer, x_adv, lp, dict_in_obj=True, finegrained=False):
         SIGNAL_BIDXS.append(SIGNAL_BIDXS[-1] + train[i].shape[0])
     signal_dict = compute_dictionary(train)
 
+    #set_trace()
+    #scipy.io.savemat('YaleBCrop.mat', {'I': data})
     concat_dict = np.hstack([signal_dict, attack_dict])
 
     s_len, l2_len, linf_len = signal_dict.shape[1], l2_dict.shape[1], linf_dict.shape[1]
