@@ -43,7 +43,17 @@ for t=1:maxIter
                wa(i,(n/(q*k))*(j-1)+1: j*(n/(k*q))) =  lambda1/(norm_csa(i) + eps) + lambda2/(norm_ca(i,j) + eps) ;
           end
          end
+     elseif flag == 4
+         for i=1:k
+          for j=1:q
+             norm_ca(i,j) = norm(ca(i,(n/(q*k))*(j-1)+1: j*(n/(k*q))),2);
+          end
+          ws((m/k)*(i-1)+1: i*(m/k)) = lambda1/(sqrt(norm(cs(i,:))^2 + sum(norm_ca(i,:)) + eps));
+          for j=1:q
+              wa(i,(n/(q*k))*(j-1)+1: j*(n/(k*q))) =  lambda1/(norm_ca(i,j)*(sqrt(norm(cs(i,:))^2 + sum(norm_ca(i,:)) + eps)))  ;
          
+          end
+         end
      end
      
    
