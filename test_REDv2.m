@@ -4,64 +4,62 @@
 tic
 randn('seed',1);warning off;
 d= 1400;
-m = 2090;
-n = 4180;
+m = 190;
+n = 380;
 k = 38;%size of cs_is is (m/k x 1)
-q = 2;%size of ca_{ij}s is (n/(k*q) x 1)
 no_attacks=2;
-%load('home/paris/singal_dict.mat');
-%load('home/paris/attack_dict.mat');
-%Ds = signal_dict;
-%Da = attack_dict;
-%Ds = randn(d,m);
-%Da = randn(d,n);
+
+Ds = randn(d,m);
+Da = randn(d,n);
 
 
 cs_1 = 1e0*randn(m/k,1);
 cs = [ zeros(m-m/k,1) ;cs_1 ];
 
-ca_1 = 1e-4*randn(n/(k*q),1);
-ca_3 = 1e-4*randn(n/(k*q),1);
- ca = [ zeros(n/(no_attacks),1); zeros(n/no_attacks - n/(k*q),1); ca_1 ; ];
+ca_1 = 1e-1*randn(n/(k*q),1);
+ca_3 = 1e-3*randn(n/(k*q),1);
+ ca = [ zeros(n/no_attacks - n/(k*q),1); zeros(n/(no_attacks),1); ca_1   ];
 
-%Ds = normc(Ds);
-%Da = normc(Da);
+Ds = normc(Ds);
+Da = normc(Da);
 
-noise  = 3e-5*randn(d,1);
+noise  = 3e-3*randn(d,1);
 signal = Ds*cs + Da*ca ;
 x = signal +  noise;
 SNR = snr(signal -Ds*cs,noise)
 
+len_a = [n/(no_attacks*k),n/(no_attacks*k)]; 
 %------------------------
 flag =1
-maxIter = 100;
-lambda1 = 0.11%0.00014;% 0.01;
-lambda2 = 0;
+maxIter = 200;
+lambda1 = 0.1;%0.00014;% 0.01;
+lambda2 = 0.05;
+lambda_rid=0.1;
 
-
-[cs_est_1,ca_est_1,obj,err_cs_1,err_ca_1,ws_1,wa_1] = block_sparse_IRLSv2(x,Ds,Da,k,q,maxIter,lambda1,lambda2,flag);
+[cs_est_1,ca_est_1,obj,err_cs_1,err_ca_1,ws_1,wa_1] = block_sparse_IRLSv2(x,Ds,Da,k,no_attacks,len_a,maxIter,lambda1,lambda2,lambda_rid,flag);
 %------------------------
 flag =2
-maxIter = 100;
+maxIter = 200;
 lambda1 = 0.11;%0.001;% 0.01;
 lambda2 = 0;
 
-[cs_est_2,ca_est_2,obj,err_cs_2,err_ca_2,ws_2,wa_2] = block_sparse_IRLSv2(x,Ds,Da,k,q,maxIter,lambda1,lambda2,flag);
+
+[cs_est_2,ca_est_2,obj,err_cs_2,err_ca_2,ws_2,wa_2] = block_sparse_IRLSv2(x,Ds,Da,k,no_attacks,len_a,maxIter,lambda1,lambda2,lambda_rid,flag);
 
 %-------------------
 flag =3
-maxIter = 100;
-lambda1 = 0.11%0.00026;% 
-lambda2 = 0.2%0.01e0%0.00016;
+maxIter = 200;
+lambda1 = 0.1%0.00026;% 
+lambda2 = 0.01%0.01e0%0.00016;
 
-[cs_est_3,ca_est_3,obj,err_cs_3,err_ca_3,ws_3,wa_3] = block_sparse_IRLSv2(x,Ds,Da,k,q,maxIter,lambda1,lambda2,flag);
+[cs_est_3,ca_est_3,obj,err_cs_3,err_ca_3,ws_3,wa_3] = block_sparse_IRLSv2(x,Ds,Da,k,no_attacks,len_a,maxIter,lambda1,lambda2,lambda_rid,flag);
 
 flag =4
-maxIter = 100;
-lambda1 = 0.5%0.00026;% 
-lambda2 = 0.0%0.01e0%0.00016;
+maxIter = 200;
+lambda1 = 0.1%0.00026;% 
+lambda2 = 0.01%0.01e0%0.00016;
 
-[cs_est_4,ca_est_4,obj,err_cs_4,err_ca_4,ws_4,wa_4] = block_sparse_IRLSv2(x,Ds,Da,k,q,maxIter,lambda1,lambda2,flag);
+[cs_est_4,ca_est_4,obj,err_cs_4,err_ca_4,ws_4,wa_4] = block_sparse_IRLSv2(x,Ds,Da,k,no_attacks,len_a,maxIter,lambda1,lambda2,lambda_rid,flag);
 
 %------------------
 disp('no reg')
@@ -92,8 +90,8 @@ ca_est_2 = [ca_est_2(1:k,:)  ca_est_2(k+1:no_attacks*k,:)];
 ca_est_3 = reshape(ca_est_3,n/(no_attacks*k),k*no_attacks)';
 ca_est_3 = [ca_est_3(1:k,:)  ca_est_3(k+1:no_attacks*k,:)];
 
-ca_est_no_reg = reshape(ca_est_no_reg,n/(no_attacks*k),k*no_attacks)';
-ca_est_no_reg = [ca_est_no_reg(1:k,:)  ca_est_no_reg(k+1:no_attacks*k,:)];
+%ca_est_no_reg = reshape(ca_est_no_reg,n/(no_attacks*k),k*no_attacks)';
+%ca_est_no_reg = [ca_est_no_reg(1:k,:)  ca_est_no_reg(k+1:no_attacks*k,:)];
 
 ca_est_4 = reshape(ca_est_4,n/(no_attacks*k),k*no_attacks)';
 ca_est_4 = [ca_est_4(1:k,:)  ca_est_4(k+1:no_attacks*k,:)];
@@ -129,15 +127,18 @@ norm_ca_true = zeros(k,q);
      
  end
  bl = k*q;
-  figure(3);  stem([norm_ca_1(:),norm_ca_2(:),norm_ca_3(:),norm_ca_4(:),norm_ca_true(:)],'filled')
-  legend('energy 1','energy 2','energy 3','energy 4','True');
-  figure(4); stem([norm_cs_1(:),norm_cs_2(:),norm_cs_3(:),norm_cs_4(:),norm_cs_true(:)],'filled');
+  figure(3);  stem([norm_ca_1(:),norm_ca_3(:),norm_ca_4(:),norm_ca_true(:)],'filled')
+  legend('energy 1','energy 3','energy 4','True');
+  
+ % figure(3);  stem([norm_ca_1(:),norm_ca_3(:),norm_ca_true(:)],'filled','diamond');axis tight;
+  %legend('BSSC','Hierarchical','Ground truth');xlabel('Blocks #');ylabel('Energy');
+  figure(4); stem([norm_cs_1(:),norm_cs_2(:),norm_cs_3(:),norm_cs_4(:),norm_cs_true(:)],'filled');axis tight;
 legend('energy 1','energy 2','energy 3','energy 4','True');
        
-wa_3 = wa_3';
+%wa_3 = wa_3';wa_3 = [wa_3(1:n/(k*q),:) wa_3(n/(k*q)+1:n/k,:)];
 figure(5);subplot(121);plot(1:n,wa_3(:));axis tight;subplot(122);plot(1:m,ws_3);axis tight;
 
-wa_4 = wa_4';
+%wa_4 = wa_4';wa_4 = [wa_4(1:n/(k*q),:) wa_4(n/(k*q)+1:n/k,:)];
 figure(6);subplot(121);plot(1:n,wa_4(:));axis tight;subplot(122);plot(1:m,ws_4);axis tight;
 
 toc
