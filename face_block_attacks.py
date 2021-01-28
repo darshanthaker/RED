@@ -5,6 +5,7 @@ import os
 import pickle
 import scipy.io
 import torch
+import torchvision
 import seaborn as sns; #sns.set(rc={'text.usetex' : True}); sns.set_style("ticks")
 import torch.nn as nn
 import re
@@ -23,17 +24,11 @@ from scipy.sparse.linalg import svds
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
 
-SIGNAL = 'signal'
-ATTACK = 'attack'
-ATTACK_F = 'attack_f'
-EPS = 0.02
+EPS = 0.075
 MEAN = 0.2728
 STD = 0.2453
 #MEAN = 69.5591
 #STD = 62.5569
-SIGNAL_BIDXS = list()
-ATTACK_BIDXS = list()
-ATTACK_BIDXS_F = list()
 
 class YaleDataset(Dataset):
 
@@ -65,9 +60,22 @@ class YaleDataset(Dataset):
 
 class Trainer(object):
 
-    def __init__(self):
-        #self.net = NN(1400, 256, 38) 
-        self.net = CNN(m=32, num_layers=3, in_channels=1, num_classes=38)
+    def __init__(self, use_cnn=True, linear=False, dataset='yale'):
+        self.use_cnn = use_cnn
+        self.dataset = dataset
+        if self.dataset == 'yale':
+            self.d = 1400
+            self.num_classes = 38
+        elif self.dataset == 'cifar':
+            self.d = 32*32*3
+            self.num_classes = 10
+        if use_cnn:
+            self.net = CNN(m=32, num_layers=3, in_channels=1, 
+                num_classes=self.num_classes, linear=linear)
+        else:
+            self.net = NN(self.d, 256, self.num_classes, linear=linear) 
+        #self.loss_fn = nn.CrossEntropyLoss()
+        self.loss_fn = nn.MultiMarginLoss()
         self.train_loader, self.test_loader = self.preprocess_data()
 
     # Normalize image to [0, 1] and then standardize.
@@ -81,27 +89,39 @@ class Trainer(object):
             self.test_y += [i for _ in range(len(raw_test_full[i]))]
         raw_train_X = np.vstack(raw_train_full)
         raw_test_X = np.vstack(raw_test_full)
-        self.train_y = np.array(self.train_y)
-        self.test_y = np.array(self.test_y)
         self.N_train = raw_train_X.shape[0]
         self.N_test = raw_test_X.shape[0]
 
         transform = transforms.Compose(
                 [transforms.ToTensor(),
                  transforms.Normalize((MEAN), (STD))])
-        self.train_dataset = YaleDataset(raw_train_X, self.train_y, transform=transform)
-        self.test_dataset = YaleDataset(raw_test_X, self.test_y, transform=transform)
+        if self.dataset == 'yale':
+            self.train_dataset = YaleDataset(raw_train_X, self.train_y, transform=transform)
+            self.test_dataset = YaleDataset(raw_test_X, self.test_y, transform=transform)
+        elif self.dataset == 'cifar':
+            self.train_dataset = torchvision.datasets.CIFAR10('files/', train=True, \
+                download=True, transform=transform)
+            self.test_dataset = torchvision.datasets.CIFAR10('files/', train=False, \
+                download=True, transform=transform)
+            self.N_train = len(self.train_dataset)
+            self.N_test = len(self.test_dataset)
 
-        train_X = [list() for i in range(38)]
-        test_X = [list() for i in range(38)]
+        train_X = [list() for i in range(self.num_classes)]
+        test_X = [list() for i in range(self.num_classes)]
+        train_y = list()
+        test_y = list()
         for i in range(self.N_train):
             x, y = self.train_dataset[i]
             train_X[y].append(x.numpy())
+            train_y.append(y)
         for i in range(self.N_test):
             x, y = self.test_dataset[i]
             test_X[y].append(x.numpy())
+            test_y.append(y)
         train_X = [np.array(val) for val in train_X]
         test_X = [np.array(val) for val in test_X]
+        self.train_y = np.array(train_y)
+        self.test_y = np.array(test_y)
 
         self.train_full = train_X
         self.test_full = test_X
@@ -116,15 +136,16 @@ class Trainer(object):
 
     def train(self, num_epochs, lr, bsz=32):
         self.optimizer = torch.optim.SGD(self.net.parameters(), lr=lr)
-        loss_fn = nn.CrossEntropyLoss()
         for epoch in range(num_epochs): 
             for batch_idx, data in enumerate(self.train_loader):
                 bx = data[0]
                 by = data[1]
+                if not self.use_cnn:
+                    bx = bx.flatten(1)
 
                 self.net.train()
                 output = self.net.forward(bx.float())
-                loss = loss_fn(output, by)
+                loss = self.loss_fn(output, by)
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
@@ -134,9 +155,10 @@ class Trainer(object):
                 print("[{}] Loss: {}. Train Accuracy: {}%. Test Accuracy: {}%.".format(epoch, 
                     loss, train_acc, test_acc))
 
-        torch.save(self.net.state_dict(), 'pretrained_model.pth')
+        torch.save(self.net.state_dict(), \
+            'pretrained_model_linear_{}.pth'.format(self.dataset))
 
-    def evaluate(self, test=True):
+    def evaluate(self, test=True, given_examples=None):
         if test:
             data_loader = self.test_loader
         else:
@@ -144,11 +166,23 @@ class Trainer(object):
         with torch.no_grad():
             loss_fn = nn.CrossEntropyLoss(reduction='sum')
             num_correct = 0
+            if given_examples is not None:
+                data_loader = [given_examples]
             for (bx, by) in data_loader:
+                if given_examples is not None:
+                    bx = torch.from_numpy(bx)
+                    by = torch.from_numpy(by)
+                bx = bx.squeeze()
+                if not self.use_cnn:
+                    bx = bx.flatten(1)
                 output = self.net.forward(bx.float())
                 pred = output.data.argmax(1)
                 num_correct += pred.eq(by.data.view_as(pred)).sum().item()
-        acc = num_correct / len(data_loader.dataset) * 100.
+        if given_examples is not None:
+            acc = num_correct / len(by) * 100.
+        else:
+            acc = num_correct / len(data_loader.dataset) * 100.
+            
         return acc
 
     def compute_lp_dictionary(self, eps, lp, block=False, normalize_cols=True):
@@ -158,20 +192,15 @@ class Trainer(object):
         blocks = dict()
         bx = torch.from_numpy(self.train_X)
         by = torch.from_numpy(self.train_y)
-        delta = torch.zeros_like(bx, requires_grad=True)
-        loss_fn = nn.CrossEntropyLoss()
-        loss = loss_fn(self.net((bx + delta).float()), by)
-        loss.backward()
-        if lp == np.infty:
-            bx_attack = (eps * delta.grad.detach().sign()).numpy()
-        elif lp == 2:
-            bx_attack = (eps * delta.grad.detach() / delta.grad.detach().norm()).numpy()
-        else:
-            print("Attack not supported!")
-            sys.exit(1)
-        dictionary = bx_attack 
+        if not self.use_cnn: 
+            bx = bx.flatten(1)
+
+        #l2, linf = self._lp_attack(lp, eps, bx, by, debug=True)
+        out = self._lp_attack(lp, eps, bx, by, only_delta=True)
+        dictionary = out
         dictionary = dictionary.reshape((dictionary.shape[0], -1))
-        for label in range(38):
+
+        for label in range(self.num_classes):
             blocks[label] = dictionary[torch.nonzero(by == label).squeeze()]
         if block:
             return blocks
@@ -179,6 +208,30 @@ class Trainer(object):
             return normalize(dictionary.T, axis=0)
         else:
             return dictionary.T
+
+    def _lp_attack(self, lp, eps, bx, by, debug=False, only_delta=False):
+        d = bx.shape[1]
+        bx.requires_grad = True
+        loss = self.loss_fn(self.net(bx.float()), by)
+        self.net.zero_grad()
+        loss.backward()
+        data_grad = bx.grad.data
+
+        linf = bx + eps * data_grad.sign()
+        l2 = bx + eps * data_grad / torch.stack(d*[data_grad.norm(dim=1) + 1e-8]).T
+        #l2 = bx + eps * data_grad / torch.stack(d*[data_grad.norm(dim=1) + 1e-8]).T
+        if only_delta:
+            linf = linf - bx
+            l2 = l2 - bx
+        l2 = l2.detach().numpy()
+        linf = linf.detach().numpy()
+        
+        if debug:
+            return l2, linf
+        if lp == 2:
+            return l2
+        elif lp == np.infty:
+            return linf
 
     def test_lp_attack(self, lp, batch_idx, eps, realizable=False):
         bx = self.test_X[batch_idx, :, :]
@@ -189,12 +242,12 @@ class Trainer(object):
         if realizable:
             blocks = self.compute_lp_dictionary(eps=EPS, lp=lp, block=True)
 
-            D = [np.zeros(blocks[i].shape[0]) for i in range(38)]
+            D = [np.zeros(blocks[i].shape[0]) for i in range(self.num_classes)]
             for i in range(10):
                 D[i][0] = 1./3.
                 D[i][1] = 1./3.
                 D[i][2] = 1./3.
-            perturb = np.array([np.dot(blocks[i].T, D[i]) for i in range(38)])
+            perturb = np.array([np.dot(blocks[i].T, D[i]) for i in range(self.num_classes)])
 
             #neigh = NearestNeighbors(n_neighbors=k)
             #neigh.fit(self.train_X.reshape((self.train_X.shape[0], -1)))
@@ -206,15 +259,17 @@ class Trainer(object):
             adv = bx + perturbation
             return adv
         else:
-            delta = torch.zeros_like(bx, requires_grad=True)
-            loss_fn = nn.CrossEntropyLoss()
-            loss = loss_fn(self.net((bx + delta).float()), by)
-            loss.backward()
-            if lp == np.infty:
-                bx_attack = (bx + eps * delta.grad.detach().sign()).numpy()
-            elif lp == 2:
-                bx_attack = (bx + eps * delta.grad.detach() / delta.grad.detach().norm()).numpy()
-            return bx_attack
+            bsz, r, c = bx.shape[0], bx.shape[2], bx.shape[3]
+            if not self.use_cnn:
+                bx = bx.flatten(1)
+            d = bx.shape[1]
+
+            out = self._lp_attack(lp, eps, bx, by)
+        
+            if not self.use_cnn:
+                out = out.reshape((bsz, 1, r, c))
+            return out
+            
 
 def compute_dictionary(train, normalize_cols=True):
     dictionary = list()
@@ -286,31 +341,11 @@ def to_mat():
     data = np.transpose(data, (2, 3, 1, 0))
     scipy.io.savemat('YaleBCrop.mat', {'I': data})
 
-def get_block(x, bidx, mode):
-    global SIGNAL_BIDXS, ATTACK_BIDXS, ATTACK_BIDXS_F
-    if mode == SIGNAL:
-        if len(x.shape) == 2:
-            return x[:, SIGNAL_BIDXS[bidx]:SIGNAL_BIDXS[bidx+1]]
-        else:
-            return x[SIGNAL_BIDXS[bidx]:SIGNAL_BIDXS[bidx+1]]
-    elif mode == ATTACK:
-        if len(x.shape) == 2:
-            return x[:, ATTACK_BIDXS[bidx]:ATTACK_BIDXS[bidx+1]]
-        else:
-            return x[ATTACK_BIDXS[bidx]:ATTACK_BIDXS[bidx+1]]
-    elif mode == ATTACK_F:
-        assert len(bidx) == 2
-        pid, aid = bidx[0], bidx[1]
-        final_id = pid*(aid+1)
-        if len(x.shape) == 2:
-            return x[:, ATTACK_BIDXS_F[final_id]:ATTACK_BIDXS_F[final_id+1]]
-        else:
-            return x[ATTACK_BIDXS_F[final_id]:ATTACK_BIDXS_F[final_id+1]]
-
-def get_objective(concat_dict, c, train, attack_lens, obj_type, dict_in_obj=False):
+def get_objective(concat_dict, c, attack_lens, obj_type, dict_in_obj=False):
     idx = 0
     objective = 0
     if obj_type == 'bssc':
+        # TODO(dbthaker): Replace len(train) below.
         for pid in range(len(train)):
             l = train[pid].shape[0]
             if dict_in_obj:
@@ -331,11 +366,11 @@ def get_objective(concat_dict, c, train, attack_lens, obj_type, dict_in_obj=Fals
             aid_blocks = list()
             i_term1 = 0
             for aid in range(len(attack_lens)): 
-                aid_block = get_block(c, (pid, aid), ATTACK_F)
+                aid_block = bi.get_block(c, (pid, aid), ATTACK_F)
                 aid_blocks.append(aid_block)
                 #i_term1 += cp.square(norm(aid_block, p=2))
                 objective += norm(aid_block, p=2)
-            pid_block = get_block(c, pid, SIGNAL)
+            pid_block = bi.get_block(c, pid, SIGNAL)
             #i_term1 += cp.square(norm(pid_block, p=2))
             #i_term1 = cp.sqrt(i_term1)
             i_term1 = hstack([pid_block] + aid_blocks)
@@ -345,102 +380,92 @@ def get_objective(concat_dict, c, train, attack_lens, obj_type, dict_in_obj=Fals
 
 def full_lp_reconstruct(trainer, lp, dict_in_obj=True, finegrained=False):
     #test_idx = list(range(trainer.N_test))
-    test_idx = list(range(100))
+    test_idx = list(range(324))
     test_adv = trainer.test_lp_attack(lp, test_idx, EPS, realizable=False)
+
+    acc = trainer.evaluate(given_examples=(test_adv, trainer.test_y[:324]))
+    print("Adversarial accuracy: {}".format(acc))
+
+    l2_dict = trainer.compute_lp_dictionary(EPS, 2)
+    linf_dict = trainer.compute_lp_dictionary(EPS, np.infty)
+
+    Da = np.hstack([l2_dict, linf_dict])
+    Ds = compute_dictionary(trainer.train_full)
+
+    scipy.io.savemat('mats/linear_mm/Da_eps{}.mat'.format(EPS), {'data': Da})
+    scipy.io.savemat('mats/linear_mm/Ds.mat', {'data': Ds})
+    if lp == np.infty:
+        scipy.io.savemat('mats/linear_mm/linf_eps{}.mat'.format(EPS), {'data': test_adv})
+    elif lp == 2:
+        scipy.io.savemat('mats/linear_mm/l2_eps{}.mat'.format(EPS), {'data': test_adv})
+    return
+
+    s_len, l2_len, linf_len = Ds.shape[1], l2_dict.shape[1], linf_dict.shape[1]
+
+    bi = utils.BlockIndexer(trainer.train_full, s_len, [l2_len, linf_len])
 
     opts = list()
     epss = list()
+    i = 35
+    x_adv = test_adv[i, :].reshape(-1)
+    opt, eps = lp_reconstruct(Ds, Da, x_adv, lp, 
+        dict_in_obj=dict_in_obj, finegrained=finegrained, bi=bi)
     for i in range(test_adv.shape[0]):
         print("Example {}".format(i))
         x_adv = test_adv[i, :].reshape(-1)
-        opt, eps = lp_reconstruct(trainer, x_adv, lp, 
-            dict_in_obj=dict_in_obj, finegrained=finegrained)
+        opt, eps = lp_reconstruct(Ds, Da, x_adv, lp, 
+            dict_in_obj=dict_in_obj, finegrained=finegrained, bi=bi)
         opts.append(opt)
         epss.append(eps)
-        block_norms = np.array([np.linalg.norm(opt[i:i+55]) for i in range(0, 6270, 55)])
-        c_s = block_norms[:38]
-        c_a = block_norms[38:]
-        markerline, stemlines, baseline = plt.stem(c_s, linefmt='grey', markerfmt='D')
-        plt.xlabel('Block #')
-        plt.ylabel('Norm')
-        plt.title('Signal coefficients: c_s')
-        plt.show()
-        plt.clf()
-        markerline, stemlines, baseline = plt.stem(c_a, linefmt='grey', markerfmt='D')
-        plt.xlabel('Block #')
-        plt.ylabel('Norm')
-        plt.title('Attack coefficients: c_a')
-        plt.show()
         set_trace()
     pickle.dump(opts, open('outs/opts_{}.pkl'.format(lp), 'wb'))
     pickle.dump(epss, open('outs/epss_{}.pkl'.format(lp), 'wb'))
 
-def lp_reconstruct(trainer, x_adv, lp, dict_in_obj=True, finegrained=False):
+def lp_reconstruct(Ds, Da, x_adv, lp, dict_in_obj=True, finegrained=False, bi=None):
     #print("-------------------{}-{}---------------------".format(ex_idx, lp))
-    l2_dict = trainer.compute_lp_dictionary(EPS, 2)
-    linf_dict = trainer.compute_lp_dictionary(EPS, np.infty)
-    attack_dict = np.hstack([l2_dict, linf_dict])
-
-    train = trainer.train_full
-    test = trainer.test_full
-    global SIGNAL_BIDXS
-    SIGNAL_BIDXS = [0]
-    for i in range(len(train)):
-        SIGNAL_BIDXS.append(SIGNAL_BIDXS[-1] + train[i].shape[0])
-    signal_dict = compute_dictionary(train)
-
-    #set_trace()
-    #scipy.io.savemat('YaleBCrop.mat', {'I': data})
-    concat_dict = np.hstack([signal_dict, attack_dict])
-
-    s_len, l2_len, linf_len = signal_dict.shape[1], l2_dict.shape[1], linf_dict.shape[1]
-
-    attack_lens = [l2_len, linf_len]
-    # Attack comes after signal in concat_dict
-    global ATTACK_BIDXS, ATTACK_BIDXS_F
-    ATTACK_BIDXS_F = [s_len + i for i in SIGNAL_BIDXS]
-    ATTACK_BIDXS_F += [s_len+l2_len + i for i in SIGNAL_BIDXS]
-    ATTACK_BIDXS = [s_len, s_len+l2_len, s_len+l2_len+linf_len]
-
+    concat_dict = np.hstack([Ds, Da])
     thres = 0.1
 
-    c = cp.Variable(s_len + sum(attack_lens))
+    s_len, a_len = Ds.shape[1], Da.shape[1]
+    c = cp.Variable(s_len + a_len)
 
-    objective = get_objective(concat_dict, c, train, attack_lens, 'bssc')
+    #objective = get_objective(concat_dict, c, train, attack_lens, 'bssc')
     #objective = get_objective(concat_dict, c, train, attack_lens, 'hierarchical')
     
-    minimizer = cp.Minimize(objective)
-    constraints = [norm(x_adv - concat_dict@c, p=2) <= thres]
+    #minimizer = cp.Minimize(objective)
+    #constraints = [norm(x_adv - concat_dict@c, p=2) <= thres]
 
-    prob = cp.Problem(minimizer, constraints)
+    #prob = cp.Problem(minimizer, constraints)
 
-    result = prob.solve(verbose=True, solver=cp.MOSEK)
+    #result = prob.solve(verbose=True, solver=cp.MOSEK)
     #result = prob.solve(verbose=False)
 
-    opt = np.array(c.value)
+    #opt = np.array(c.value)
+    opt = scipy.io.loadmat('mats/opt_est_4_linear_linf.mat')['opt'][0, :]
 
-    eps = np.zeros((len(SIGNAL_BIDXS) - 1, len(ATTACK_BIDXS) - 1))
+    eps = np.zeros((len(bi.SIGNAL_BIDXS) - 1, len(bi.ATTACK_BIDXS) - 1))
     min_val = np.infty
     argmin_val = None
-    for i in range(len(SIGNAL_BIDXS) - 1):
-        for j in range(len(ATTACK_BIDXS) - 1):
+    for i in range(len(bi.SIGNAL_BIDXS) - 1):
+        for j in range(len(bi.ATTACK_BIDXS) - 1):
             try:
-                assert s_len == l2_len and s_len == linf_len
-                attack_d = get_block(concat_dict, j, ATTACK)
-                attack_person_d = get_block(attack_d, i, SIGNAL)
-                attack_c = get_block(opt, j, ATTACK)
-                attack_person_c = get_block(attack_c, i, SIGNAL)
+                #assert s_len == l2_len and s_len == linf_len
+                attack_d = bi.get_block(concat_dict, j, utils.ATTACK)
+                attack_person_d = bi.get_block(attack_d, i, utils.SIGNAL)
+                attack_c = bi.get_block(opt, j, utils.ATTACK)
+                attack_person_c = bi.get_block(attack_c, i, utils.SIGNAL)
                 res = x_adv - \
-                      get_block(concat_dict, i, SIGNAL) @ get_block(opt, i, SIGNAL) - \
+                      bi.get_block(concat_dict, i, utils.SIGNAL) @ bi.get_block(opt, i, utils.SIGNAL) - \
                       attack_person_d @ attack_person_c 
-                      #get_block(concat_dict, j, ATTACK) @ get_block(opt, j, ATTACK)
-            except:
-                print("ERROR!")
+                      #bi.get_block(concat_dict, j, ATTACK) @ bi.get_block(opt, j, ATTACK)
+            except Exception as e:
+                print("ERROR! {}", e)
                 set_trace()
             eps[i][j] = np.linalg.norm(res, 2)
             if eps[i][j] < min_val:
                 min_val = eps[i][j]
                 argmin_val = i, j
+    set_trace()
     return opt, eps
 
     """
@@ -488,27 +513,28 @@ def analyze(trainer, lp):
     print("Attack Percentage correct: {}%".format(att_per))
     print("PID Percentage correct: {}%".format(pid_per))
 
+def get_coherence(trainer):
     l2_dict = trainer.compute_lp_dictionary(EPS, 2)
     linf_dict = trainer.compute_lp_dictionary(EPS, np.infty)
 
     l2_b = orth(l2_dict)
     linf_b = orth(linf_dict)
-    l2_b2 = orth(clipped_l2)
-    linf_b2 = orth(clipped_linf)
+    #l2_b2 = orth(clipped_l2)
+    #linf_b2 = orth(clipped_linf)
 
     _, c1, _ = svds(l2_b.T @ linf_b, k=1)
-    _, c2, _ = svds(l2_b2.T @ linf_b2, k=1)
+    #_, c2, _ = svds(l2_b2.T @ linf_b2, k=1)
 
     print("Normal shape: L2: {}, Linf: {}".format(l2_dict.shape[1], linf_dict.shape[1]))
-    print("Clipped shape: L2: {}, Linf: {}".format(clipped_l2.shape[1], clipped_linf.shape[1]))
+    #print("Clipped shape: L2: {}, Linf: {}".format(clipped_l2.shape[1], clipped_linf.shape[1]))
     print("Rank of l2: {}. Rank of linf: {}".format(l2_b.shape[1], linf_b.shape[1]))
-    print("Rank of l2 clipped: {}. Rank of linf clipped: {}".format(l2_b2.shape[1], linf_b2.shape[1]))
-    print("Coherence all classes: {}. Coherence diff classes: {}".format(c1[0], c2[0]))
+    #print("Rank of l2 clipped: {}. Rank of linf clipped: {}".format(l2_b2.shape[1], linf_b2.shape[1]))
+    print("Coherence all classes: {}".format(c1[0]))
 
 np.random.seed(0)
-trainer = Trainer()
+trainer = Trainer(use_cnn=False, dataset='yale')
 #trainer.train(20, 1e-2) 
-trainer.net.load_state_dict(torch.load('pretrained_model.pth'))
+trainer.net.load_state_dict(torch.load('pretrained_model_linear.pth'))
 test_acc = trainer.evaluate(test=True)
 print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
 #lp_reconstruct(trainer, 0, 2, dict_in_obj=False)
@@ -518,7 +544,9 @@ print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
 #lp_reconstruct(trainer, 20, 2)
 #lp_reconstruct(trainer, 20, np.infty)
 
+
+#get_coherence(trainer)
 full_lp_reconstruct(trainer, 2, dict_in_obj=False)
-#full_lp_reconstruct(trainer, np.infty, dict_in_obj=False)
+full_lp_reconstruct(trainer, np.infty, dict_in_obj=False)
 #analyze(trainer, 2)
 #analyze(trainer, np.infty)
