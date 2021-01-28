@@ -5,7 +5,7 @@ from pdb import set_trace
 
 class NN(nn.Module):
 
-    def __init__(self, d, m, num_classes):
+    def __init__(self, d, m, num_classes, linear=False):
         super().__init__()
         self.d = d
         self.m = m
@@ -13,22 +13,30 @@ class NN(nn.Module):
         self.lin2 = nn.Linear(self.m, self.m)
         self.lin3 = nn.Linear(self.m, num_classes)
         self.relu = nn.ReLU()
+        self.is_linear = linear
 
     def forward(self, x):
         out = x
-        out = self.relu(self.lin1(out))
-        out = self.relu(self.lin2(out))
+        if self.is_linear:
+            out = self.lin1(out)
+            out = self.lin2(out)
+        else:
+            out = self.relu(self.lin1(out))
+            out = self.relu(self.lin2(out))
         out = self.lin3(out)
         return out
 
 class CNN(nn.Module):
 
-    def __init__(self, m, num_layers, in_channels=3, num_classes=10):
+    def __init__(self, m, num_layers, in_channels=3, num_classes=10, linear=False):
         super().__init__()
         layers = []
         for i in range(num_layers):
             conv2d = nn.Conv2d(in_channels, m, kernel_size=3, padding=1)
-            layers += [conv2d, nn.ReLU()]
+            if linear:
+                layers += [conv2d]
+            else:
+                layers += [conv2d, nn.ReLU()]
             in_channels = m
         self.features = nn.ModuleList(layers)
         self.maxpool = nn.MaxPool2d(3, stride=2)

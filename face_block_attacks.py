@@ -24,7 +24,7 @@ from scipy.sparse.linalg import svds
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
 
-EPS = 0.075
+EPS = 0.1
 MEAN = 0.2728
 STD = 0.2453
 #MEAN = 69.5591
@@ -218,7 +218,7 @@ class Trainer(object):
         data_grad = bx.grad.data
 
         linf = bx + eps * data_grad.sign()
-        l2 = bx + eps * data_grad / torch.stack(d*[data_grad.norm(dim=1) + 1e-8]).T
+        l2 = bx + eps * d**0.5 * data_grad / torch.stack(d*[data_grad.norm(dim=1) + 1e-8]).T
         #l2 = bx + eps * data_grad / torch.stack(d*[data_grad.norm(dim=1) + 1e-8]).T
         if only_delta:
             linf = linf - bx
@@ -392,8 +392,8 @@ def full_lp_reconstruct(trainer, lp, dict_in_obj=True, finegrained=False):
     Da = np.hstack([l2_dict, linf_dict])
     Ds = compute_dictionary(trainer.train_full)
 
-    scipy.io.savemat('mats/linear_mm/Da_eps{}.mat'.format(EPS), {'data': Da})
     scipy.io.savemat('mats/linear_mm/Ds.mat', {'data': Ds})
+    scipy.io.savemat('mats/linear_mm/Da.mat', {'data': Da})
     if lp == np.infty:
         scipy.io.savemat('mats/linear_mm/linf_eps{}.mat'.format(EPS), {'data': test_adv})
     elif lp == 2:

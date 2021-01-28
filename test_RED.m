@@ -7,8 +7,10 @@ n = 250;
 k = 5;%size of cs_is is (m/k x 1)
 q = 5;%size of ca_{ij}s is (n/(k*q) x 1)
 
-Ds = randn(d,m);
-Da = randn(d,n);
+%Ds = randn(d,m);
+%Da = randn(d,n);
+Ds = load('Ds.mat').I;
+Da = load('Da.mat').I;
 
 
 cs_1 = 1e0*randn(m/k,1);
@@ -22,7 +24,7 @@ ca = [ ca_1 ; zeros(n/(k*q),1); ca_3; zeros(n-3*n/(k*q),1)];
 Ds = normc(Ds);
 Da = normc(Da);
 
-noise  = 6e-5*randn(d,1);
+noise  = 5e-5*randn(d,1);
 signal = Ds*cs + Da*ca ;
 x = signal +  noise;
 SNR = snr(signal -Ds*cs,noise)
@@ -47,7 +49,7 @@ lambda2 = 0;
 flag =3;
 maxIter = 500;
 lambda1 = 0.00026;% 
-lambda2 = 0.00016;
+lambda2 = 0.00015;
 
 [cs_est_3,ca_est_3,obj,err_cs_3,err_ca_3,ws_3,wa_3] = block_sparse_IRLS(x,Ds,Da,k,q,maxIter,lambda1,lambda2,flag);
 
@@ -95,6 +97,12 @@ norm_ca_true = zeros(k,q);
  bl = k*q;
   norm_ca_1 = norm_ca_1';norm_ca_2 = norm_ca_2';norm_ca_3 = norm_ca_3';norm_ca_4 = norm_ca_4';norm_ca_true = norm_ca_true';
   
-  figure(3);  stem([norm_ca_1(:),norm_ca_2(:),norm_ca_3(:),norm_ca_4(:),norm_ca_true(:)],'filled')
-  legend('energy 1','energy 2','energy 3','energy no reg','True');
+  figure(3);  
+  %stem([norm_ca_1(:),norm_ca_2(:),norm_ca_3(:),norm_ca_4(:),norm_ca_true(:)],'filled')
+  %legend('energy 1','energy 2','energy 3','energy no reg','Ground Truth');
+  stem([norm_ca_1(:), norm_ca_3(:),norm_ca_true(:)],'filled')
+  xlabel('Block #')
+  ylabel('Energy')
+  legend('BSSC', 'Hierarchical', 'Ground Truth');
+  
        
