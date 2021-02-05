@@ -39,7 +39,7 @@ blk_1_size = blck_size(1);
 converged = 0;
 t = 1;
 thresh = 1e-5;
-epsilon1 = 3; % theshold - negligible energy
+epsilon1 = 2; % theshold - negligible energy
 Inds = 1:classes_no;
 DDA = Da'*Da;
 DDS = Ds'*Ds;
@@ -149,7 +149,7 @@ while (t <= maxIter) & (converged == 0)
      
    err_cs(t) =  norm(Ds*cs  - Ds_old*cs_old)/norm(Ds_old*cs_old);
    err_ca(t) = 1;%norm(ca-ca_old)/norm(ca_old);
-   if err_cs(t) <= thresh & err_ca(t)<= thresh
+   if err_cs(t) <= thresh | err_ca(t)<= thresh
        converged = 1;
    end
    obj = 0;
