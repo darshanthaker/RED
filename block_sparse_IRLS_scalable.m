@@ -117,7 +117,7 @@ while (t <= maxIter) & (converged == 0)
                  Da(:,indx_a) =[];
                  ca(indx_a) = [];
                  classes_no = classes_no - 1;
-                 m = classes_no*55;
+                 m = classes_no*blk_1_size;
                  DDA = Da'*Da;
                  DDS = Ds'*Ds;
                  
