@@ -39,10 +39,12 @@ blk_1_size = blck_size(1);
 converged = 0;
 t = 1;
 thresh = 1e-5;
-epsilon1 = 2; % theshold - negligible energy
+epsilon1 = 2; % threshold - negligible energy
 Inds = 1:classes_no;
 DDA = Da'*Da;
 DDS = Ds'*Ds;
+
+
 while (t <= maxIter) & (converged == 0)
      
      cs_old = cs;
@@ -54,6 +56,9 @@ while (t <= maxIter) & (converged == 0)
          for i=1:classes_no
              norm_cs(i) = norm(cs((m/classes_no)*(i-1)+1: i*(m/classes_no)),2);
              del1 = max(norm_cs(i),epsilon);
+             
+             
+             
              ws((m/classes_no)*(i-1)+1: i*(m/classes_no)) = lambda1/del1; 
             
          for j=1:attacks_no
@@ -77,20 +82,48 @@ while (t <= maxIter) & (converged == 0)
          end
          
      elseif alg==3 %concatenated cs_i and ca_ijs + regularization of ca_i_j_s
-         for i=1:classes_no
+         i=1;
+         while i<=classes_no
             ca_ =[];
              for j=1:attacks_no
-                 ca_ = [ca_ ca((j-1)*blk_1_size*classes_no + (i-1)*blck_size(j) + 1 : (j-1)*blk_1_size*classes_no + i*blck_size(j))];
+                 ca_ = lambda2*[ca_ ca((j-1)*blk_1_size*classes_no + (i-1)*blck_size(j) + 1 : (j-1)*blk_1_size*classes_no + i*blck_size(j))];
              end
          norm_csa(i) = norm([cs((m/classes_no)*(i-1)+1: i*(m/classes_no)) ca_],2);
-         del1 = max(norm_csa(i),epsilon);
-         ws((m/classes_no)*(i-1)+1: i*(m/classes_no)) = lambda1/del1;
+         del1(i) = max(norm_csa(i),epsilon);
+         
+             if del1(i) < epsilon1  
+                
+                
+                 indx_s =  (m/classes_no)*(i-1)+1: i*(m/classes_no);
+                 ws(indx_s) = [];
+                 Ds(:,indx_s) = [];
+                 cs(indx_s) = [];
+                 indx_a = [];
+                 
+                 for j=1:2
+                     indx_a = [indx_a  (j-1)*blk_1_size*classes_no + (i-1)*blck_size(j) + 1 : (j-1)*blk_1_size*classes_no + i*blck_size(j)];
+                 end
+                 wa(indx_a)=[];
+                 Da(:,indx_a) =[];
+                 ca(indx_a) = [];
+                 classes_no = classes_no - 1;
+                 m = classes_no*blk_1_size;
+                 DDA = Da'*Da;
+                 DDS = Ds'*Ds;
+                 
+             elseif del1(i)>=epsilon1
+             
+             
+             
+         ws((m/classes_no)*(i-1)+1: i*(m/classes_no)) = lambda1/del1(i);
          
           for j=1:attacks_no
                norm_ca(i,j) = norm(ca( (j-1)*blk_1_size*classes_no + (i-1)*blck_size(j) + 1 : (j-1)*blk_1_size*classes_no + i*blck_size(j)),2);
                del2 = max(norm_ca(i,j), epsilon);
-               wa( (j-1)*blk_1_size*classes_no + (i-1)*blck_size(j) + 1 : (j-1)*blk_1_size*classes_no + i*blck_size(j)) =  lambda1/del1 + lambda2/del2 ;
+               wa( (j-1)*blk_1_size*classes_no + (i-1)*blck_size(j) + 1 : (j-1)*blk_1_size*classes_no + i*blck_size(j)) =  (lambda1*lambda2)/del1(i) ;%+ lambda2/del2 ;
           end
+          i=i+1;
+             end
          end
      elseif alg == 4 %concatenated cs_i and ca_ijs + regularization of ca_i_j_s: second approach
          i=1;
@@ -99,7 +132,7 @@ while (t <= maxIter) & (converged == 0)
                
               norm_ca(i,j) = norm(ca(  (j-1)*blk_1_size*classes_no + (i-1)*blck_size(j) + 1 : (j-1)*blk_1_size*classes_no + i*blck_size(j)),2);
             end
-             del_s(i) = sqrt(norm(cs((m/classes_no)*(i-1)+1: i*(m/classes_no)))^2 + sum(norm_ca(i,:)));
+             del_s(i) = sqrt(norm(cs((m/classes_no)*(i-1)+1: i*(m/classes_no)))^2 + lambda2*sum(norm_ca(i,:)));
              
              if del_s(i) < epsilon1  
                 
@@ -141,7 +174,7 @@ while (t <= maxIter) & (converged == 0)
    Ws = diag(ws);
    Wa = diag(wa');
   
-   
+
    %Updates of ca and cs
    ca = (DDA + Wa )\((Da')*(x - Ds*cs)); 
    cs  = (DDS + Ws)\((Ds')*(x - Da*ca));
