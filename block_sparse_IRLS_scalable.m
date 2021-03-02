@@ -39,7 +39,7 @@ blk_1_size = blck_size(1);
 converged = 0;
 t = 1;
 thresh = 1e-5;
-epsilon1 = 2; % threshold - negligible energy
+epsilon1 = 4; % threshold - negligible energy
 Inds = 1:classes_no;
 DDA = Da'*Da;
 DDS = Ds'*Ds;
@@ -100,7 +100,7 @@ while (t <= maxIter) & (converged == 0)
                  cs(indx_s) = [];
                  indx_a = [];
                  
-                 for j=1:2
+                 for j=1:attacks_no
                      indx_a = [indx_a  (j-1)*blk_1_size*classes_no + (i-1)*blck_size(j) + 1 : (j-1)*blk_1_size*classes_no + i*blck_size(j)];
                  end
                  wa(indx_a)=[];
@@ -127,14 +127,14 @@ while (t <= maxIter) & (converged == 0)
          end
      elseif alg == 4 %concatenated cs_i and ca_ijs + regularization of ca_i_j_s: second approach
          i=1;
-          while i<=classes_no
+          while i<=classes_no & classes_no>1
             for j=1:attacks_no
                
               norm_ca(i,j) = norm(ca(  (j-1)*blk_1_size*classes_no + (i-1)*blck_size(j) + 1 : (j-1)*blk_1_size*classes_no + i*blck_size(j)),2);
             end
              del_s(i) = sqrt(norm(cs((m/classes_no)*(i-1)+1: i*(m/classes_no)))^2 + lambda2*sum(norm_ca(i,:)));
              
-             if del_s(i) < epsilon1  
+             if del_s(i) < epsilon1 
                 
                 
                  indx_s =  (m/classes_no)*(i-1)+1: i*(m/classes_no);
@@ -143,9 +143,10 @@ while (t <= maxIter) & (converged == 0)
                  cs(indx_s) = [];
                  indx_a = [];
                  
-                 for j=1:2
+                 for j=1:attacks_no
                      indx_a = [indx_a  (j-1)*blk_1_size*classes_no + (i-1)*blck_size(j) + 1 : (j-1)*blk_1_size*classes_no + i*blck_size(j)];
                  end
+                 
                  wa(indx_a)=[];
                  Da(:,indx_a) =[];
                  ca(indx_a) = [];
@@ -154,7 +155,7 @@ while (t <= maxIter) & (converged == 0)
                  DDA = Da'*Da;
                  DDS = Ds'*Ds;
                  
-             elseif del_s(i)>=epsilon1
+             elseif del_s(i)>=epsilon1 
              
              ws((m/classes_no)*(i-1)+1: i*(m/classes_no)) = lambda1./del_s(i);
              
@@ -182,7 +183,7 @@ while (t <= maxIter) & (converged == 0)
      
    err_cs(t) =  norm(Ds*cs  - Ds_old*cs_old)/norm(Ds_old*cs_old);
    err_ca(t) = 1;%norm(ca-ca_old)/norm(ca_old);
-   if err_cs(t) <= thresh | err_ca(t)<= thresh
+   if err_cs(t) <= thresh | err_ca(t)<= thresh | classes_no==1
        converged = 1;
    end
    obj = 0;
