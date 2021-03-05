@@ -7,7 +7,7 @@ from utils import BlockIndexer
 class BlockSparseIRLSSolver(object):
 
     def __init__(self, Ds, Da, num_classes, num_attacks, block_size, \
-                 max_iter=300, lambda1=3, lambda2=15, lambda_reg=0.01):
+                 max_iter=300, lambda1=3, lambda2=15, lambda_reg=0.01, del_threshold=1.5):
         self.Ds = Ds
         self.Da = Da
         self.num_classes = num_classes
@@ -18,12 +18,13 @@ class BlockSparseIRLSSolver(object):
         self.lambda1 = lambda1
         self.lambda2 = lambda2
         self.lambda_reg = lambda_reg
+        self.del_threshold = del_threshold
 
         assert self.Ds.shape[1] == num_classes * block_size
         assert self.Da.shape[1] == num_classes * num_attacks * block_size
 
 
-    def prune(self, Ds_est, Da_est, cs_est, ca_est, del_threshold=2):
+    def prune(self, Ds_est, Da_est, cs_est, ca_est):
         eps = 1e-5
         i = 0
         ws = np.zeros(cs_est.shape)
@@ -35,7 +36,7 @@ class BlockSparseIRLSSolver(object):
                 norm_ca[i, j] = np.linalg.norm(self.hier_bi.get_block(ca_est, (i, j)))
             del_s = (np.linalg.norm(self.sig_bi.get_block(cs_est, i))**2 +  \
                                 self.lambda2*np.sum(norm_ca[i, :]))**0.5
-            if del_s < del_threshold:
+            if del_s < self.del_threshold:
                 ws = self.sig_bi.delete_block(ws, i)
                 Ds_est = self.sig_bi.delete_block(Ds_est, i)
                 cs_est = self.sig_bi.delete_block(cs_est, i)
@@ -84,7 +85,7 @@ class BlockSparseIRLSSolver(object):
         self.active_classes = np.array(list(range(self.num_classes)))
         self.hier_bi = BlockIndexer(self.block_size, [self.num_classes, self.num_attacks])
         self.sig_bi = BlockIndexer(self.block_size, [self.num_classes])
-        self.att_bi = BlockIndexer(self.block_size*self.num_classes, [self.num_attacks])
+        #self.att_bi = BlockIndexer(self.block_size*self.num_classes, [self.num_attacks])
 
         err_cs = list()
         while not converged and t < self.max_iter:
@@ -96,6 +97,7 @@ class BlockSparseIRLSSolver(object):
             Ws = np.diag(ws)
             Wa = np.diag(wa) 
             
+            # TODO(dbthaker): Return gram matrix only if pruned.
             Da_est_gram = Da_est.T @ Da_est
             Ds_est_gram = Ds_est.T @ Ds_est
             ca_est = np.linalg.solve(Da_est_gram + Wa, Da_est.T @ (x - Ds_est@cs_est))
@@ -103,6 +105,7 @@ class BlockSparseIRLSSolver(object):
             err_cs.append(np.linalg.norm(Ds_est@cs_est - Ds_old@cs_old) / np.linalg.norm(Ds_old@cs_old))
              
             if err_cs[-1] <= thres or len(self.active_classes) == 1:
+                print("Number of iterations: {}".format(t))
                 converged = True
             t += 1
         err_cs = np.array(err_cs)

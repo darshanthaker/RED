@@ -31,6 +31,8 @@ from foolbox.utils import samples
 from irls import BlockSparseIRLSSolver
 
 DATASET = 'mnist'
+ARCH = 'carlini_cnn'
+TOOLCHAIN = [2, np.infty]
 #EPS = {'mnist': {1: 10.0, \
 #       2: 2.0, \
 #       np.infty: 0.3}}
@@ -78,8 +80,9 @@ class YaleDataset(Dataset):
 
 class Trainer(object):
 
-    def __init__(self, use_cnn=True, linear=False, dataset='yale'):
-        self.use_cnn = use_cnn
+    def __init__(self, arch='carlini_cnn', dataset='yale', bsz=128):
+        self.arch = arch
+        self.use_cnn = 'cnn' in arch
         self.dataset = dataset
         if self.dataset == 'yale':
             self.d = 1400
@@ -87,14 +90,17 @@ class Trainer(object):
         elif self.dataset == 'cifar':
             self.d = 32*32*3
             self.num_classes = 10
+            self.in_channels = 3
         elif self.dataset == 'mnist':
             self.d = 28*28
             self.num_classes = 10
-        if use_cnn:
-            self.net = CNN(m=32, num_layers=3, in_channels=1, 
-                num_classes=self.num_classes, linear=linear)
+            self.in_channels = 1
+        if self.use_cnn:
+            self.net = CNN(arch=self.arch, in_channels=self.in_channels,
+                num_classes=self.num_classes)
         else:
             self.net = NN(self.d, 256, self.num_classes, linear=linear) 
+        self.bsz = bsz
         self.loss_fn = nn.CrossEntropyLoss()
         #self.loss_fn = nn.MultiMarginLoss()
         self.train_loader, self.test_loader = self.preprocess_data()
@@ -103,7 +109,7 @@ class Trainer(object):
     def preprocess_data(self):
         transform = transforms.Compose(
                 [transforms.ToTensor()])
-                 #transforms.Normalize((MEAN_MAP[self.dataset]), (STD_MAP[self.dataset]))])
+                # transforms.Normalize((MEAN_MAP[self.dataset]), (STD_MAP[self.dataset]))])
 
         if self.dataset == 'yale':
             data = parse_yale_data()
@@ -157,14 +163,14 @@ class Trainer(object):
         self.N_train = self.train_X.shape[0]
         self.N_test = self.test_X.shape[0]
 
-        train_loader = torch.utils.data.DataLoader(self.train_dataset, batch_size=32,
+        train_loader = torch.utils.data.DataLoader(self.train_dataset, batch_size=self.bsz,
             shuffle=True, worker_init_fn=lambda wid: np.random.seed(np.uint32(torch.initial_seed() + wid)))
         test_loader = torch.utils.data.DataLoader(self.test_dataset, batch_size=100,
             shuffle=True, worker_init_fn=lambda wid: np.random.seed(np.uint32(torch.initial_seed() + wid)))
         return train_loader, test_loader
 
-    def train(self, num_epochs, lr, bsz=32):
-        self.optimizer = torch.optim.SGD(self.net.parameters(), lr=lr)
+    def train(self, num_epochs, lr):
+        self.optimizer = torch.optim.SGD(self.net.parameters(), lr=lr, momentum=0.5)
         for epoch in range(num_epochs): 
             for batch_idx, data in enumerate(self.train_loader):
                 bx = data[0]
@@ -184,14 +190,16 @@ class Trainer(object):
                 print("[{}] Loss: {}. Train Accuracy: {}%. Test Accuracy: {}%.".format(epoch, 
                     loss, train_acc, test_acc))
 
-        torch.save(self.net.state_dict(), \
-            'pretrained_model_ce_{}.pth'.format(self.dataset))
+        save_path = 'pretrained_model_ce_{}_{}.pth'.format(self.arch, self.dataset)
+        torch.save(self.net.state_dict(), save_path)
+        print("Saved model to {}".format(save_path))
 
     def evaluate(self, test=True, given_examples=None):
         if test:
             data_loader = self.test_loader
         else:
             data_loader = self.train_loader
+        self.net.eval()
         with torch.no_grad():
             loss_fn = nn.CrossEntropyLoss(reduction='sum')
             num_correct = 0
@@ -201,8 +209,8 @@ class Trainer(object):
                 if given_examples is not None:
                     bx = torch.from_numpy(bx)
                     by = torch.from_numpy(by)
-                bx = bx.squeeze()
                 if not self.use_cnn:
+                    bx = bx.squeeze()
                     bx = bx.flatten(1)
                 output = self.net.forward(bx.float())
                 pred = output.data.argmax(1)
@@ -624,7 +632,8 @@ def irls(trainer, toolchain, lp):
     acc = trainer.evaluate(given_examples=(test_adv, test_y))
     print("[L{}] Adversarial accuracy: {}%".format(lp, acc))
 
-    solver = BlockSparseIRLSSolver(Ds, Da, trainer.num_classes, num_attacks, sz)
+    solver = BlockSparseIRLSSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
+            lambda1=3, lambda2=15)
     class_preds = list()
     attack_preds = list()
     denoised = list()
@@ -663,13 +672,12 @@ def irls(trainer, toolchain, lp):
 
 def main():
     np.random.seed(0)
-    trainer = Trainer(use_cnn=False, dataset=DATASET)
-    #trainer.train(20, 1e-2) 
-    trainer.net.load_state_dict(torch.load('pretrained_model_ce_{}.pth'.format(DATASET)))
+    trainer = Trainer(arch=ARCH, dataset=DATASET, bsz=128)
+    trainer.train(50, 0.01) 
+    trainer.net.load_state_dict(torch.load('pretrained_model_ce_{}_{}.pth'.format(ARCH, DATASET)))
     test_acc = trainer.evaluate(test=True)
     print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
-    toolchain = [2, np.infty]
-    irls(trainer, toolchain, np.infty)
+    irls(trainer, TOOLCHAIN, np.infty)
     #serialize_dictionaries(trainer, toolchain)
 
 main()

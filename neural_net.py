@@ -28,32 +28,33 @@ class NN(nn.Module):
 
 class CNN(nn.Module):
 
-    def __init__(self, m, num_layers, in_channels=3, num_classes=10, linear=False):
+    def __init__(self, arch, in_channels=3, num_classes=10, linear=False):
         super().__init__()
+        if arch == 'carlini_cnn':
+            cfg = [32, 32, 'M', 64, 64, 'M']
+
         layers = []
-        for i in range(num_layers):
-            conv2d = nn.Conv2d(in_channels, m, kernel_size=3, padding=1)
-            if linear:
-                layers += [conv2d]
+        for v in cfg:
+            if v == 'M':
+                layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
             else:
+                conv2d = nn.Conv2d(in_channels, v, kernel_size=3)
                 layers += [conv2d, nn.ReLU()]
-            in_channels = m
+                in_channels = v
         self.features = nn.ModuleList(layers)
-        self.maxpool = nn.MaxPool2d(3, stride=2)
-        self.avgpool = nn.AdaptiveAvgPool2d((7, 7))
-        self.classifier = nn.Linear(m*9*8, num_classes)
 
+        self.classifier = nn.ModuleList([
+            nn.Linear(64 * 4 * 4, 200),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(200, 200),
+            nn.ReLU(),
+            nn.Linear(200, num_classes)])
+          
     def forward(self, x):
-        x = self.features[0](x)
-        x = self.features[1](x)
-        x = self.maxpool(x)
-        x = self.features[2](x)
-        x = self.maxpool(x)
-        #for layer in self.features:
-        #    x = layer(x)
-        #x = self.maxpool(x)
+        for layer in self.features:
+            x = layer(x)
         x = torch.flatten(x, 1)
-        x = self.classifier(x)  
+        for layer in self.classifier:
+            x = layer(x)
         return x
-
-
