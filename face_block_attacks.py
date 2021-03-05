@@ -628,7 +628,7 @@ def irls(trainer, toolchain, lp):
     class_preds = list()
     attack_preds = list()
     denoised = list()
-    for t in range(20):
+    for t in range(100):
         if t % 5 == 0:
             print(t)
         x = test_adv[t, :, :]
@@ -655,8 +655,11 @@ def irls(trainer, toolchain, lp):
     class_preds = np.array(class_preds)
     attack_preds = np.array(attack_preds)
     denoised = np.array(denoised)
+    signal_acc = np.sum(class_preds == test_y[:100])
+    attack_acc = np.sum(attack_preds == toolchain.index(lp))
+    print("Signal classification accuracy: {}%".format(signal_acc))
+    print("Attack detection accuracy: {}%".format(attack_acc))
     set_trace()
-        
 
 def main():
     np.random.seed(0)
@@ -666,7 +669,7 @@ def main():
     test_acc = trainer.evaluate(test=True)
     print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
     toolchain = [2, np.infty]
-    irls(trainer, toolchain, 2)
+    irls(trainer, toolchain, np.infty)
     #serialize_dictionaries(trainer, toolchain)
 
 main()

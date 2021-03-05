@@ -75,12 +75,19 @@ class BlockIndexer():
             assert x.shape[-1] == reduce(mul, self.num_blocks) * self.block_size
 
     def delete_block(self, x, block_idx):
-        start_idx, end_idx = self._expand_block_idx(block_idx)
-        if len(x.shape) == 2:
-            x = np.delete(x, np.arange(start_idx, end_idx), 1)
+        if self.hierarchical:
+            indices = list()
+            for j in range(self.num_blocks[1]):
+                start_idx, end_idx = self._expand_block_idx((block_idx, j))
+                indices.append(np.arange(start_idx, end_idx))
+            indices = np.concatenate(indices)
         else:
-            x = np.delete(x, np.arange(start_idx, end_idx))
-        #self.num_blocks[0] = self.num_blocks[0] - 1
+            start_idx, end_idx = self._expand_block_idx(block_idx)
+            indices = np.arange(start_idx, end_idx)
+        if len(x.shape) == 2:
+            x = np.delete(x, indices, 1)
+        else:
+            x = np.delete(x, indices)
         return x
 
     def set_block(self, x, block_idx, val):
