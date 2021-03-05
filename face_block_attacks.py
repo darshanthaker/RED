@@ -10,6 +10,7 @@ import seaborn as sns; #sns.set(rc={'text.usetex' : True}); sns.set_style("ticks
 import torch.nn as nn
 import re
 import matplotlib.pyplot as plt
+import foolbox
 import utils
 
 from PIL import Image
@@ -23,12 +24,29 @@ from scipy.linalg import orth
 from scipy.sparse.linalg import svds
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
+from advertorch.attacks import SparseL1DescentAttack, L2PGDAttack
+from foolbox.attacks import FGSM, L2PGD, L1PGD
+from foolbox.criteria import Misclassification
+from foolbox.utils import samples
+from irls import BlockSparseIRLSSolver
 
-EPS = 0.1
-MEAN = 0.2728
-STD = 0.2453
-#MEAN = 69.5591
-#STD = 62.5569
+DATASET = 'mnist'
+#EPS = {'mnist': {1: 10.0, \
+#       2: 2.0, \
+#       np.infty: 0.3}}
+EPS = {'mnist': {1: 0.25, \
+       2: 0.3, \
+       np.infty: 0.3}}
+EPS = EPS[DATASET]
+MEAN_MAP = {'yale': 0.2728, \
+            'cifar': [0.4913997551666284, 0.48215855929893703, 0.4465309133731618], \
+            'mnist':  0.1307}
+STD_MAP = {'yale': 0.2453, \
+           'cifar': [0.24703225141799082, 0.24348516474564, 0.26158783926049628], \
+            'mnist': 0.3081}
+SIZE_MAP = {'yale': 20, \
+            'cifar': 200, \
+            'mnist': 200}
 
 class YaleDataset(Dataset):
 
@@ -69,33 +87,35 @@ class Trainer(object):
         elif self.dataset == 'cifar':
             self.d = 32*32*3
             self.num_classes = 10
+        elif self.dataset == 'mnist':
+            self.d = 28*28
+            self.num_classes = 10
         if use_cnn:
             self.net = CNN(m=32, num_layers=3, in_channels=1, 
                 num_classes=self.num_classes, linear=linear)
         else:
             self.net = NN(self.d, 256, self.num_classes, linear=linear) 
-        #self.loss_fn = nn.CrossEntropyLoss()
-        self.loss_fn = nn.MultiMarginLoss()
+        self.loss_fn = nn.CrossEntropyLoss()
+        #self.loss_fn = nn.MultiMarginLoss()
         self.train_loader, self.test_loader = self.preprocess_data()
 
     # Normalize image to [0, 1] and then standardize.
     def preprocess_data(self):
-        data = parse_data()
-        raw_train_full, raw_test_full = split_train_test(data)
-        self.train_y = []
-        self.test_y = []
-        for i in range(len(raw_train_full)):
-            self.train_y += [i for _ in range(len(raw_train_full[i]))]
-            self.test_y += [i for _ in range(len(raw_test_full[i]))]
-        raw_train_X = np.vstack(raw_train_full)
-        raw_test_X = np.vstack(raw_test_full)
-        self.N_train = raw_train_X.shape[0]
-        self.N_test = raw_test_X.shape[0]
-
         transform = transforms.Compose(
-                [transforms.ToTensor(),
-                 transforms.Normalize((MEAN), (STD))])
+                [transforms.ToTensor()])
+                 #transforms.Normalize((MEAN_MAP[self.dataset]), (STD_MAP[self.dataset]))])
+
         if self.dataset == 'yale':
+            data = parse_yale_data()
+            raw_train_full, raw_test_full = split_train_test(data)
+            self.train_y = []
+            self.test_y = []
+            for i in range(len(raw_train_full)):
+                self.train_y += [i for _ in range(len(raw_train_full[i]))]
+                self.test_y += [i for _ in range(len(raw_test_full[i]))]
+            raw_train_X = np.vstack(raw_train_full)
+            raw_test_X = np.vstack(raw_test_full)
+
             self.train_dataset = YaleDataset(raw_train_X, self.train_y, transform=transform)
             self.test_dataset = YaleDataset(raw_test_X, self.test_y, transform=transform)
         elif self.dataset == 'cifar':
@@ -103,30 +123,39 @@ class Trainer(object):
                 download=True, transform=transform)
             self.test_dataset = torchvision.datasets.CIFAR10('files/', train=False, \
                 download=True, transform=transform)
-            self.N_train = len(self.train_dataset)
-            self.N_test = len(self.test_dataset)
+        elif self.dataset == 'mnist':
+            self.train_dataset = torchvision.datasets.MNIST('files/', train=True, \
+                download=True, transform=transform) 
+            self.test_dataset = torchvision.datasets.MNIST('files/', train=False, \
+                download=True, transform=transform)
+        self.N_train = len(self.train_dataset)
+        self.N_test = len(self.test_dataset)
 
         train_X = [list() for i in range(self.num_classes)]
         test_X = [list() for i in range(self.num_classes)]
-        train_y = list()
-        test_y = list()
+        train_y = [list() for i in range(self.num_classes)]
+        test_y = [list() for i in range(self.num_classes)]
         for i in range(self.N_train):
             x, y = self.train_dataset[i]
+            if len(train_X[y]) >= SIZE_MAP[self.dataset]:
+                continue
             train_X[y].append(x.numpy())
-            train_y.append(y)
+            train_y[y].append(y)
         for i in range(self.N_test):
             x, y = self.test_dataset[i]
             test_X[y].append(x.numpy())
-            test_y.append(y)
+            test_y[y].append(y)
         train_X = [np.array(val) for val in train_X]
         test_X = [np.array(val) for val in test_X]
-        self.train_y = np.array(train_y)
-        self.test_y = np.array(test_y)
+        self.train_y = np.concatenate([np.array(val) for val in train_y])
+        self.test_y = np.concatenate([np.array(val) for val in test_y])
 
         self.train_full = train_X
         self.test_full = test_X
         self.train_X = np.vstack(train_X)
         self.test_X = np.vstack(test_X)
+        self.N_train = self.train_X.shape[0]
+        self.N_test = self.test_X.shape[0]
 
         train_loader = torch.utils.data.DataLoader(self.train_dataset, batch_size=32,
             shuffle=True, worker_init_fn=lambda wid: np.random.seed(np.uint32(torch.initial_seed() + wid)))
@@ -156,7 +185,7 @@ class Trainer(object):
                     loss, train_acc, test_acc))
 
         torch.save(self.net.state_dict(), \
-            'pretrained_model_linear_{}.pth'.format(self.dataset))
+            'pretrained_model_ce_{}.pth'.format(self.dataset))
 
     def evaluate(self, test=True, given_examples=None):
         if test:
@@ -185,6 +214,19 @@ class Trainer(object):
             
         return acc
 
+    def compute_train_dictionary(self, normalize_cols=True, embedding=None):
+        train = self.train_full
+        dictionary = list()
+        for pid in range(len(train)):
+            for i in range(train[pid].shape[0]):
+                x = train[pid][i, :, :]
+                dictionary.append(x.reshape(-1))
+        dictionary = np.array(dictionary).T
+        if normalize_cols:
+            return normalize(dictionary, axis=0)
+        else:
+            return dictionary
+
     def compute_lp_dictionary(self, eps, lp, block=False, normalize_cols=True):
         idx = list(range(self.N_train))
         bsz = self.N_train
@@ -195,7 +237,6 @@ class Trainer(object):
         if not self.use_cnn: 
             bx = bx.flatten(1)
 
-        #l2, linf = self._lp_attack(lp, eps, bx, by, debug=True)
         out = self._lp_attack(lp, eps, bx, by, only_delta=True)
         dictionary = out
         dictionary = dictionary.reshape((dictionary.shape[0], -1))
@@ -209,7 +250,7 @@ class Trainer(object):
         else:
             return dictionary.T
 
-    def _lp_attack(self, lp, eps, bx, by, debug=False, only_delta=False):
+    def _lp_attack(self, lp, eps, bx, by, debug=False, only_delta=False, scale=True):
         d = bx.shape[1]
         bx.requires_grad = True
         loss = self.loss_fn(self.net(bx.float()), by)
@@ -217,21 +258,80 @@ class Trainer(object):
         loss.backward()
         data_grad = bx.grad.data
 
-        linf = bx + eps * data_grad.sign()
-        l2 = bx + eps * d**0.5 * data_grad / torch.stack(d*[data_grad.norm(dim=1) + 1e-8]).T
-        #l2 = bx + eps * data_grad / torch.stack(d*[data_grad.norm(dim=1) + 1e-8]).T
-        if only_delta:
-            linf = linf - bx
-            l2 = l2 - bx
-        l2 = l2.detach().numpy()
-        linf = linf.detach().numpy()
-        
+        if scale:
+            linf = bx + eps * data_grad.sign()
+            l2 = bx + eps * d**0.5 * data_grad / torch.stack(d*[data_grad.norm(dim=1) + 1e-8]).T
+            adversary = SparseL1DescentAttack(
+                self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=d*eps,
+                nb_iter=150, eps_iter=eps, rand_init=True, clip_min=-np.inf, clip_max=np.inf,
+            targeted=False)
+
+            l1 = adversary.perturb(bx, by)
+            if only_delta:
+                linf = linf - bx
+                l2 = l2 - bx
+                l1 - l1 - bx 
+            linf = linf.detach().numpy()
+            l2 = l2.detach().numpy()
+            l1 = l1.detach().numpy()
+        else:
+            #linf = bx + eps * data_grad.sign()
+            #l2 = bx + eps * data_grad / torch.stack(d*[data_grad.norm(dim=1) + 1e-8]).T
+          
+            self.net.zero_grad()
+            self.net.eval()
+            fmodel = foolbox.models.PyTorchModel(self.net, bounds=(0, 1)) 
+            criterion = Misclassification(by) 
+            if lp == np.infty: 
+                linf_adv = FGSM()
+                _, linf, _ = linf_adv(fmodel, bx, criterion, epsilons=[eps])
+                linf = linf[0]
+                #linf = bx + eps * data_grad.sign()
+                #set_trace()
+                if only_delta:
+                    linf = linf - bx
+                linf = linf.detach().numpy()
+                return linf
+
+            elif lp == 2:
+                l2_adv = L2PGD(rel_stepsize=0.1, steps=200)
+                l2_adversary = L2PGDAttack(
+                    self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
+                    nb_iter=200, eps_iter=0.1, rand_init=True, clip_min=0, clip_max=1,
+                    targeted=False)
+                #images, labels = samples(fmodel, dataset="mnist", batchsize=20) 
+                #set_trace()
+                _, l2, _  = l2_adv(fmodel, bx, criterion, epsilons=[eps])
+                l2 = l2[0]
+                #l2 = l2_adversary.perturb(bx, by)
+                if only_delta:
+                    l2 = l2 - bx
+                l2 = l2.detach().numpy()
+                return l2
+           
+            elif lp == 1: 
+                l1_adv = L1PGD(rel_stepsize=1.0, steps=200)
+                l1_adversary = SparseL1DescentAttack(
+                    self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
+                    nb_iter=200, eps_iter=10.0, rand_init=True, clip_min=0, clip_max=1,
+                    targeted=False)
+                #set_trace()
+                #l1 = l1_adversary.perturb(bx, by)
+                _, l1, _ = l1_adv(fmodel, bx, criterion, epsilons=[eps])
+                l1 = l1[0]
+                if only_delta:
+                    l1 = l1 - bx
+                l1 = l1.detach().numpy()
+                return l1
+
         if debug:
             return l2, linf
         if lp == 2:
             return l2
         elif lp == np.infty:
             return linf
+        elif lp == 1:
+            return l1
 
     def test_lp_attack(self, lp, batch_idx, eps, realizable=False):
         bx = self.test_X[batch_idx, :, :]
@@ -240,7 +340,7 @@ class Trainer(object):
         by = torch.from_numpy(by)
 
         if realizable:
-            blocks = self.compute_lp_dictionary(eps=EPS, lp=lp, block=True)
+            blocks = self.compute_lp_dictionary(eps=EPS[lp], lp=lp, block=True)
 
             D = [np.zeros(blocks[i].shape[0]) for i in range(self.num_classes)]
             for i in range(10):
@@ -259,7 +359,7 @@ class Trainer(object):
             adv = bx + perturbation
             return adv
         else:
-            bsz, r, c = bx.shape[0], bx.shape[2], bx.shape[3]
+            bsz, channels, r, c = bx.shape[0], bx.shape[1], bx.shape[2], bx.shape[3]
             if not self.use_cnn:
                 bx = bx.flatten(1)
             d = bx.shape[1]
@@ -267,24 +367,12 @@ class Trainer(object):
             out = self._lp_attack(lp, eps, bx, by)
         
             if not self.use_cnn:
-                out = out.reshape((bsz, 1, r, c))
+                out = out.reshape((bsz, channels, r, c))
             return out
             
 
-def compute_dictionary(train, normalize_cols=True):
-    dictionary = list()
-    for pid in range(len(train)):
-        for i in range(train[pid].shape[0]):
-            x = train[pid][i, :, :]
-            dictionary.append(x.reshape(-1))
-    dictionary = np.array(dictionary).T
-    if normalize_cols:
-        return normalize(dictionary, axis=0)
-    else:
-        return dictionary
-
 # Format: data is a list of 38 subjects, each who have m_i x 192 x 168 images.
-def parse_data(resize=True):
+def parse_yale_data(resize=True):
     PATH = 'CroppedYale'
 
     data = [0 for _ in range(38)]
@@ -330,163 +418,46 @@ def split_train_test(data):
         test[pid] = data[pid][m:, :, :, :]
     return train, test
 
-def to_mat():
-    data = parse_data(resize=False)
-    # Pad with zeros to make 64 images per person exactly.
-    for pid in range(len(data)):
-        if data[pid].shape[0] < 64:
-            x, y = data[pid][0, :, :].shape
-            data[pid] = np.concatenate([data[pid], np.zeros((64-data[pid].shape[0], x, y))])
-    data = np.array(data)
-    data = np.transpose(data, (2, 3, 1, 0))
-    scipy.io.savemat('YaleBCrop.mat', {'I': data})
+def serialize_dictionaries(trainer, toolchain):
+    attack_dicts = list()
+    for attack in toolchain:
+        attack_dicts.append(trainer.compute_lp_dictionary(EPS[attack], attack))
 
-def get_objective(concat_dict, c, attack_lens, obj_type, dict_in_obj=False):
-    idx = 0
-    objective = 0
-    if obj_type == 'bssc':
-        # TODO(dbthaker): Replace len(train) below.
-        for pid in range(len(train)):
-            l = train[pid].shape[0]
-            if dict_in_obj:
-                objective += norm(concat_dict[:, idx:idx+l]@c[idx:idx+l], p=2)
-            else:
-                objective += norm(c[idx:idx+l], p=2)
-            idx += l
-
-        for a in range(len(attack_lens)):
-            a_len = attack_lens[a]
-            if dict_in_obj:
-                objective += norm(concat_dict[:, idx:idx+a_len]@c[idx:idx+a_len], p=2)
-            else:
-                objective += norm(c[idx:idx+a_len], p=2)
-            idx += a_len
-    elif obj_type == 'hierarchical':
-        for pid in range(len(train)):
-            aid_blocks = list()
-            i_term1 = 0
-            for aid in range(len(attack_lens)): 
-                aid_block = bi.get_block(c, (pid, aid), ATTACK_F)
-                aid_blocks.append(aid_block)
-                #i_term1 += cp.square(norm(aid_block, p=2))
-                objective += norm(aid_block, p=2)
-            pid_block = bi.get_block(c, pid, SIGNAL)
-            #i_term1 += cp.square(norm(pid_block, p=2))
-            #i_term1 = cp.sqrt(i_term1)
-            i_term1 = hstack([pid_block] + aid_blocks)
-            #objective += i_term1
-            objective += norm(i_term1, p=2)
-    return objective
-
-def full_lp_reconstruct(trainer, lp, dict_in_obj=True, finegrained=False):
-    #test_idx = list(range(trainer.N_test))
-    test_idx = list(range(324))
-    test_adv = trainer.test_lp_attack(lp, test_idx, EPS, realizable=False)
-
-    acc = trainer.evaluate(given_examples=(test_adv, trainer.test_y[:324]))
-    print("Adversarial accuracy: {}".format(acc))
-
-    l2_dict = trainer.compute_lp_dictionary(EPS, 2)
-    linf_dict = trainer.compute_lp_dictionary(EPS, np.infty)
-
-    Da = np.hstack([l2_dict, linf_dict])
-    Ds = compute_dictionary(trainer.train_full)
-
-    scipy.io.savemat('mats/linear_mm/Ds.mat', {'data': Ds})
-    scipy.io.savemat('mats/linear_mm/Da.mat', {'data': Da})
-    if lp == np.infty:
-        scipy.io.savemat('mats/linear_mm/linf_eps{}.mat'.format(EPS), {'data': test_adv})
-    elif lp == 2:
-        scipy.io.savemat('mats/linear_mm/l2_eps{}.mat'.format(EPS), {'data': test_adv})
-    return
-
-    s_len, l2_len, linf_len = Ds.shape[1], l2_dict.shape[1], linf_dict.shape[1]
-
-    bi = utils.BlockIndexer(trainer.train_full, s_len, [l2_len, linf_len])
-
-    opts = list()
-    epss = list()
-    i = 35
-    x_adv = test_adv[i, :].reshape(-1)
-    opt, eps = lp_reconstruct(Ds, Da, x_adv, lp, 
-        dict_in_obj=dict_in_obj, finegrained=finegrained, bi=bi)
-    for i in range(test_adv.shape[0]):
-        print("Example {}".format(i))
-        x_adv = test_adv[i, :].reshape(-1)
-        opt, eps = lp_reconstruct(Ds, Da, x_adv, lp, 
-            dict_in_obj=dict_in_obj, finegrained=finegrained, bi=bi)
-        opts.append(opt)
-        epss.append(eps)
-        set_trace()
-    pickle.dump(opts, open('outs/opts_{}.pkl'.format(lp), 'wb'))
-    pickle.dump(epss, open('outs/epss_{}.pkl'.format(lp), 'wb'))
-
-def lp_reconstruct(Ds, Da, x_adv, lp, dict_in_obj=True, finegrained=False, bi=None):
-    #print("-------------------{}-{}---------------------".format(ex_idx, lp))
-    concat_dict = np.hstack([Ds, Da])
-    thres = 0.1
-
-    s_len, a_len = Ds.shape[1], Da.shape[1]
-    c = cp.Variable(s_len + a_len)
-
-    #objective = get_objective(concat_dict, c, train, attack_lens, 'bssc')
-    #objective = get_objective(concat_dict, c, train, attack_lens, 'hierarchical')
+    np.random.seed(0)
+    test_idx = np.random.choice(list(range(trainer.N_test)), 324)
+    Da = np.hstack(attack_dicts)
+    Ds = trainer.compute_train_dictionary(trainer.train_full)
+    dst = trainer.dataset
+    sz = SIZE_MAP[dst]
+    if toolchain == [1, 2, np.infty]:
+        ident = "all"
+    elif toolchain == [2, np.infty]:
+        ident = "2_inf"
+    elif toolchain == [1, np.infty]:
+        ident = "1_inf"
     
-    #minimizer = cp.Minimize(objective)
-    #constraints = [norm(x_adv - concat_dict@c, p=2) <= thres]
+    scipy.io.savemat('mats/{}_ce/Ds_sub{}.mat'.format(dst, sz), {'data': Ds})
+    #scipy.io.savemat('mats/{}_ce/Da_sub{}_{}.mat'.format(dst, sz, len(toolchain)), {'data': Da})
+    scipy.io.savemat('mats/{}_ce/Da_sub{}_{}.mat'.format(dst, sz, ident), {'data': Da})
+    scipy.io.savemat('mats/{}_ce/test_y.mat'.format(dst), {'data': trainer.test_y[test_idx]})
 
-    #prob = cp.Problem(minimizer, constraints)
+    all_attacks = list()
+    for lp in toolchain:
+        test_adv = trainer.test_lp_attack(lp, test_idx, EPS[attack], realizable=False)
+        all_attacks.append(test_adv)
 
-    #result = prob.solve(verbose=True, solver=cp.MOSEK)
-    #result = prob.solve(verbose=False)
+        acc = trainer.evaluate(given_examples=(test_adv, trainer.test_y[test_idx]))
+        print("[L{}] Adversarial accuracy: {}".format(lp, acc))
+        if lp == np.infty:
+            scipy.io.savemat('mats/{}_ce/linf_eps{}.mat'.format(dst, EPS[attack]), {'data': test_adv})
+        elif lp == 2:
+            scipy.io.savemat('mats/{}_ce/l2_eps{}.mat'.format(dst, EPS[attack]), {'data': test_adv})
+        elif lp == 1:
+            scipy.io.savemat('mats/{}_ce/l1_eps{}.mat'.format(dst, EPS[attack]), {'data': test_adv})
 
-    #opt = np.array(c.value)
-    opt = scipy.io.loadmat('mats/opt_est_4_linear_linf.mat')['opt'][0, :]
-
-    eps = np.zeros((len(bi.SIGNAL_BIDXS) - 1, len(bi.ATTACK_BIDXS) - 1))
-    min_val = np.infty
-    argmin_val = None
-    for i in range(len(bi.SIGNAL_BIDXS) - 1):
-        for j in range(len(bi.ATTACK_BIDXS) - 1):
-            try:
-                #assert s_len == l2_len and s_len == linf_len
-                attack_d = bi.get_block(concat_dict, j, utils.ATTACK)
-                attack_person_d = bi.get_block(attack_d, i, utils.SIGNAL)
-                attack_c = bi.get_block(opt, j, utils.ATTACK)
-                attack_person_c = bi.get_block(attack_c, i, utils.SIGNAL)
-                res = x_adv - \
-                      bi.get_block(concat_dict, i, utils.SIGNAL) @ bi.get_block(opt, i, utils.SIGNAL) - \
-                      attack_person_d @ attack_person_c 
-                      #bi.get_block(concat_dict, j, ATTACK) @ bi.get_block(opt, j, ATTACK)
-            except Exception as e:
-                print("ERROR! {}", e)
-                set_trace()
-            eps[i][j] = np.linalg.norm(res, 2)
-            if eps[i][j] < min_val:
-                min_val = eps[i][j]
-                argmin_val = i, j
-    set_trace()
-    return opt, eps
-
-    """
-    ax = sns.heatmap(eps, annot=True, fmt="0.0f", annot_kws={"fontsize":8},
-                yticklabels=range(1, eps.shape[0]+1), xticklabels=['L2', 'Linf'])
-    ax.set_yticklabels(range(1, eps.shape[0]+1), size = 8)
-    plt.ylabel('Person ID')
-    plt.title("$\| x_{adv} - D_s[i]c_s[i] - D_a[j][i]c_a[j][i]\|_2$")
-    plt.savefig('plots/fg_heatmap_success_linf.png')
-    #plt.title("$\| x_{adv} - D_s[i]c_s[i] - D_a[j]c_a[j]\|_2$")
-    #plt.savefig('plots/coarse_heatmap_success_linf.png')
-    plt.show()
-
-    perturb = 1./3 * linf_dict[:, 0] + 1./3 *linf_dict[:, 1] + 1./3*linf_dict[:, 2]
-    signal_res = x_adv - \
-        get_block(concat_dict, 0, SIGNAL) @ get_block(opt, 0, SIGNAL) - perturb
-    res = x_adv - \
-        get_block(concat_dict, 0, SIGNAL) @ get_block(opt, 0, SIGNAL) - \
-        get_block(concat_dict, 1, ATTACK) @ get_block(opt, 1, ATTACK)
-    set_trace()
-    """
+    all_attacks = np.array(all_attacks)
+    avg = np.mean(all_attacks, axis=0)
+    scipy.io.savemat('mats/{}_ce/avg_eps{}.mat'.format(dst, EPS[np.infty]), {'data': avg})
 
 def analyze(trainer, lp):
     epss = pickle.load(open('outs/epss_{}.pkl'.format(lp), 'rb'))
@@ -513,40 +484,189 @@ def analyze(trainer, lp):
     print("Attack Percentage correct: {}%".format(att_per))
     print("PID Percentage correct: {}%".format(pid_per))
 
-def get_coherence(trainer):
-    l2_dict = trainer.compute_lp_dictionary(EPS, 2)
-    linf_dict = trainer.compute_lp_dictionary(EPS, np.infty)
+def plot_heatmap():
+    eps = scipy.io.loadmat('mats/linear_mm/err_joint_eps0.1.mat')['err_joint']
+    err_class = scipy.io.loadmat('mats/linear_mm/err_class_eps0.1.mat')['err_class']
+    err_attack = scipy.io.loadmat('mats/linear_mm/err_attack_eps0.1.mat')['err_attack']
+    ax = sns.heatmap(eps, annot=True, fmt="0.02f", annot_kws={"fontsize":8},
+                yticklabels=range(1, eps.shape[0]+1), xticklabels=['L2', 'Linf'])
+    ax.set_yticklabels(range(1, eps.shape[0]+1), size = 8)
+    plt.ylabel('Person ID')
+    plt.title("$\| x_{adv} - D_s[i]c_s[i] - D_a[j][i]c_a[j][i]\|_2$")
+    plt.show()
+    ax = sns.heatmap(err_class, annot=True, fmt="0.02f", annot_kws={"fontsize":8},
+                yticklabels=range(1, err_class.shape[0]+1))
+    ax.set_yticklabels(range(1, err_class.shape[0]+1), size = 8)
+    plt.ylabel('Person ID')
+    plt.title("$\| x_{adv} - D_s[i]c_s[i] - D_ac_a\|_2$")
+    plt.show()
+    ax = sns.heatmap(err_attack, annot=True, fmt="0.02f", annot_kws={"fontsize":8},
+                yticklabels=range(1, err_attack.shape[0]+1))
+    ax.set_yticklabels(range(1, err_attack.shape[0]+1), size = 8)
+    plt.ylabel('Attack ID')
+    plt.title("$\| x_{adv} - D_s[i*]c_s[i*] - D_a[i*][j]c_a[i*][j]\|_2$")
+    plt.show()
+    #plt.savefig('plots/fg_heatmap_success_linf.png')
+    #plt.title("$\| x_{adv} - D_s[i]c_s[i] - D_a[j]c_a[j]\|_2$")
+    #plt.savefig('plots/coarse_heatmap_success_linf.png')
+   
+def backtest(trainer, mat):
+    pred_cleans = scipy.io.loadmat(mat)['pred_cleans']
+    pred_cleans = pred_cleans.reshape((-1, 28, 28))
+    test_y = scipy.io.loadmat('mats/mnist_ce/test_y.mat')['data'][0, :100]
 
-    l2_b = orth(l2_dict)
-    linf_b = orth(linf_dict)
-    #l2_b2 = orth(clipped_l2)
-    #linf_b2 = orth(clipped_linf)
+    test_acc = trainer.evaluate(given_examples=(pred_cleans, test_y))
+    print("Backtest accuracy: {}%".format(test_acc))
 
-    _, c1, _ = svds(l2_b.T @ linf_b, k=1)
-    #_, c2, _ = svds(l2_b2.T @ linf_b2, k=1)
+def baseline(trainer, test_adv, test_y):
+    Ds = compute_dictionary(trainer.train_full)
+    s_len = Ds.shape[1]
 
-    print("Normal shape: L2: {}, Linf: {}".format(l2_dict.shape[1], linf_dict.shape[1]))
-    #print("Clipped shape: L2: {}, Linf: {}".format(clipped_l2.shape[1], clipped_linf.shape[1]))
-    print("Rank of l2: {}. Rank of linf: {}".format(l2_b.shape[1], linf_b.shape[1]))
-    #print("Rank of l2 clipped: {}. Rank of linf clipped: {}".format(l2_b2.shape[1], linf_b2.shape[1]))
-    print("Coherence all classes: {}".format(c1[0]))
+    thres = 10
+    pred = list()
+    for i in range(test_adv.shape[0]):
+        if i % 10 == 0:
+            print(i)
 
-np.random.seed(0)
-trainer = Trainer(use_cnn=False, dataset='yale')
-#trainer.train(20, 1e-2) 
-trainer.net.load_state_dict(torch.load('pretrained_model_linear.pth'))
-test_acc = trainer.evaluate(test=True)
-print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
-#lp_reconstruct(trainer, 0, 2, dict_in_obj=False)
-#lp_reconstruct(trainer, 0, np.infty, dict_in_obj=False)
-#lp_reconstruct(trainer, 10, 2, dict_in_obj=False)
-#lp_reconstruct(trainer, 10, np.infty, dict_in_obj=False)
-#lp_reconstruct(trainer, 20, 2)
-#lp_reconstruct(trainer, 20, np.infty)
+        c = cp.Variable(s_len)
+        idx = 0
+        objective = 0
+        for pid in range(trainer.num_classes):
+            l = SIZE_MAP[trainer.dataset]
+            objective += norm(c[idx:idx+l], p=2)
+            idx += l
 
+        x_adv = test_adv[i, :].reshape(-1)
+        minimizer = cp.Minimize(objective)
+        constraints = [norm(x_adv - Ds@c, p=2) <= thres]
+        prob = cp.Problem(minimizer, constraints)
 
-#get_coherence(trainer)
-full_lp_reconstruct(trainer, 2, dict_in_obj=False)
-full_lp_reconstruct(trainer, np.infty, dict_in_obj=False)
-#analyze(trainer, 2)
-#analyze(trainer, np.infty)
+        #result = prob.solve(verbose=True, solver=cp.MOSEK)
+        result = prob.solve(verbose=False)
+        opt = np.array(c.value)
+
+        l = SIZE_MAP[trainer.dataset]
+        res = list()
+        for pid in range(trainer.num_classes):
+            res.append(np.linalg.norm(x_adv - Ds[:, l*pid:l*(pid + 1)]@opt[l*pid:l*(pid + 1)]))
+        pred.append(np.argmin(res))
+    pred = np.array(pred)
+    acc = sum(pred == test_y)
+    return acc
+
+def eps_plot(trainer):
+    epss = [0.05, 0.07, 0.10, 0.15, 0.20, 0.25, 0.30]
+    atts = ['l2', 'linf']
+    att_map = {'l2': 2, 'linf': np.inf}
+    result_map = {'l2': {'signal': [], 'att': [], 'test': [], 'backtest': [], 'baseline': []}, 
+                  'linf': {'signal': [], 'att': [], 'test': [], 'backtest': [], 'baseline': []}}
+
+    np.random.seed(0)
+    test_idx = np.random.choice(list(range(trainer.N_test)), 324)[:100]
+    test_y = scipy.io.loadmat('mats/mnist_ce/test_y.mat')['data'][0, :100]
+    """
+    for eps in epss:
+        for (idx, att) in enumerate(atts):
+            att_pred = scipy.io.loadmat('mats/mnist_recon/att_pred_{:0.2f}_{}.mat'.format(eps, att))['att_pred']
+            adv_acc = np.sum(att_pred == idx + 1)
+            class_pred = scipy.io.loadmat('mats/mnist_recon/class_pred_{:0.2f}_{}.mat'.format(eps, att))['class_pred']
+            signal_acc = np.sum(class_pred == test_y)
+            pred_cleans = scipy.io.loadmat('mats/mnist_recon/pred_cleans_{:0.2f}_{}.mat'.format(eps, att))['pred_cleans']
+            pred_cleans = pred_cleans.reshape((-1, 28, 28))
+            backtest_acc = trainer.evaluate(given_examples=(pred_cleans, test_y))
+
+            test_adv = trainer.test_lp_attack(att_map[att], test_idx, eps, realizable=False)
+
+            clean_acc = trainer.evaluate(given_examples=(test_adv, test_y))
+
+            baseline_acc = baseline(trainer, test_adv, test_y)
+
+            result_map[att]['att'].append(adv_acc)
+            result_map[att]['signal'].append(signal_acc)
+            result_map[att]['backtest'].append(backtest_acc)
+            result_map[att]['test'].append(clean_acc)
+            result_map[att]['baseline'].append(baseline_acc)
+    """
+
+    result_map = pickle.load(open('mats/mnist_recon/result_map.pkl', 'rb'))
+
+    for att in atts:
+        plt.plot(epss, result_map[att]['signal'], label='Signal Classification', marker='*')
+        plt.plot(epss, result_map[att]['att'], label='Attack Detection', marker='*')
+        plt.plot(epss, result_map[att]['test'], label='NN Adversarial', marker='*')
+        plt.plot(epss, result_map[att]['backtest'], label='NN Denoising', marker='*')
+        plt.plot(epss, result_map[att]['baseline'], label='Baseline', marker='*')
+        plt.legend()
+        plt.grid()
+        plt.xlabel('Epsilon of Perturbation')
+        plt.ylabel('Accuracy')
+        plt.yticks(np.arange(0, 101, 10))
+        plt.title('Test Accuracies for 100 data points perturbed with {} attack'.format(att))
+        plt.show()
+    set_trace()    
+
+def irls(trainer, toolchain, lp):
+    print("L{} attacks, eps = {}".format(lp, EPS[lp]))
+    attack_dicts = list()
+    for attack in toolchain:
+        attack_dicts.append(trainer.compute_lp_dictionary(EPS[attack], attack))
+
+    np.random.seed(0)
+    test_idx = np.random.choice(list(range(trainer.N_test)), 324)
+    test_y = trainer.test_y[test_idx]
+    Da = np.hstack(attack_dicts)
+    Ds = trainer.compute_train_dictionary(trainer.train_full)
+    dst = trainer.dataset
+    sz = SIZE_MAP[dst]
+    num_attacks = len(toolchain)
+    
+    test_adv = trainer.test_lp_attack(lp, test_idx, EPS[attack], realizable=False)
+    acc = trainer.evaluate(given_examples=(test_adv, test_y))
+    print("[L{}] Adversarial accuracy: {}%".format(lp, acc))
+
+    solver = BlockSparseIRLSSolver(Ds, Da, trainer.num_classes, num_attacks, sz)
+    class_preds = list()
+    attack_preds = list()
+    denoised = list()
+    for t in range(20):
+        if t % 5 == 0:
+            print(t)
+        x = test_adv[t, :, :]
+        x = x.reshape(-1)
+        cs_est, ca_est, Ds_est, Da_est, err_cs, ws, wa, active_classes = solver.solve(x)
+
+        err_class = list()
+        for i in range(solver.sig_bi.num_blocks[0]):
+            Ds_blk = solver.sig_bi.get_block(Ds_est, i)
+            cs_blk = solver.sig_bi.get_block(cs_est, i)
+            err_class.append(np.linalg.norm(x - Ds_blk@cs_blk - Da_est@ca_est))
+        err_class = np.array(err_class)
+        i_star = np.argmin(err_class)
+        class_preds.append(active_classes[i_star])
+
+        err_attack = list()
+        for j in range(num_attacks):
+            Da_blk = solver.hier_bi.get_block(Da_est, (i_star, j)) 
+            ca_blk = solver.hier_bi.get_block(ca_est, (i_star, j)) 
+            err_attack.append(np.linalg.norm(x - Ds_est@cs_est - Da_blk@ca_blk))
+        err_attack = np.array(err_attack)
+        attack_preds.append(np.argmin(err_attack))
+        denoised.append(x - Da_est@ca_est)
+    class_preds = np.array(class_preds)
+    attack_preds = np.array(attack_preds)
+    denoised = np.array(denoised)
+    set_trace()
+        
+
+def main():
+    np.random.seed(0)
+    trainer = Trainer(use_cnn=False, dataset=DATASET)
+    #trainer.train(20, 1e-2) 
+    trainer.net.load_state_dict(torch.load('pretrained_model_ce_{}.pth'.format(DATASET)))
+    test_acc = trainer.evaluate(test=True)
+    print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
+    toolchain = [2, np.infty]
+    irls(trainer, toolchain, 2)
+    #serialize_dictionaries(trainer, toolchain)
+
+main()

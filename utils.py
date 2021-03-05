@@ -2,6 +2,8 @@ import numpy as np
 import re
 import torch
 
+from operator import mul
+from functools import reduce
 from pdb import set_trace
 
 SIGNAL = 'signal'
@@ -43,41 +45,49 @@ def to_tensor_custom(pic):
 
 class BlockIndexer():
 
-    def __init__(self, train, s_len, attack_lens):
-        self.SIGNAL_BIDXS = [0]
-        for i in range(len(train)):
-            self.SIGNAL_BIDXS.append(self.SIGNAL_BIDXS[-1] + train[i].shape[0])
-        l2_len = attack_lens[0]
-        linf_len = attack_lens[1]
-        self.ATTACK_BIDXS_F = [s_len + i for i in self.SIGNAL_BIDXS]
-        self.ATTACK_BIDXS_F += [s_len+l2_len + i for i in self.SIGNAL_BIDXS]
-        self.ATTACK_BIDXS = [s_len, s_len+l2_len, s_len+l2_len+linf_len]
+    def __init__(self, block_size, num_blocks):
+        self.block_size = block_size
+        self.num_blocks = num_blocks
+        self.hierarchical = len(self.num_blocks) == 2
 
-    def get_block(self, x, bidx, mode):
-        if mode == SIGNAL:
-            if len(x.shape) == 2:
-                return x[:, self.SIGNAL_BIDXS[bidx]:self.SIGNAL_BIDXS[bidx+1]]
-            else:
-                return x[self.SIGNAL_BIDXS[bidx]:self.SIGNAL_BIDXS[bidx+1]]
-        elif mode == ATTACK:
-            if len(x.shape) == 2:
-                return x[:, self.ATTACK_BIDXS[bidx]:self.ATTACK_BIDXS[bidx+1]]
-            else:
-                return x[self.ATTACK_BIDXS[bidx]:self.ATTACK_BIDXS[bidx+1]]
-        elif mode == ATTACK_F:
-            assert len(bidx) == 2
-            pid, aid = bidx[0], bidx[1]
-            final_id = pid*(aid+1)
-            if len(x.shape) == 2:
-                return x[:, self.ATTACK_BIDXS_F[final_id]:self.ATTACK_BIDXS_F[final_id+1]]
-            else:
-                return x[self.ATTACK_BIDXS_F[final_id]:self.ATTACK_BIDXS_F[final_id+1]]
+    def _expand_block_idx(self, block_idx):
+        if self.hierarchical:
+            (i, j) = block_idx
+            assert i < self.num_blocks[0] and j < self.num_blocks[1]
+            start_idx = j*self.block_size*self.num_blocks[0] + i*self.block_size
+            end_idx = j*self.block_size*self.num_blocks[0] + (i + 1)*self.block_size
+        else:
+            i = block_idx
+            assert i < self.num_blocks[0]
+            start_idx = i*self.block_size
+            end_idx = (i + 1)*self.block_size
+        return (start_idx, end_idx)
 
-    def set_block(self, x, bidx, val, mode):
-        if mode == SIGNAL:
-            x[self.SIGNAL_BIDXS[bidx]:self.SIGNAL_BIDXS[bidx+1]] = val
-        elif mode == ATTACK_F:
-            pid, aid = bidx[0], bidx[1]
-            final_id = pid*(aid+1)
-            x[self.ATTACK_BIDXS_F[final_id]:self.ATTACK_BIDXS_F[final_id+1]] = val
+    def get_block(self, x, block_idx):
+        start_idx, end_idx = self._expand_block_idx(block_idx)
+        if len(x.shape) == 2:
+            return x[:, start_idx:end_idx]
+        else:
+            return x[start_idx:end_idx]
+
+    def sanity_check(self, xs):
+        for x in xs:
+            assert x.shape[-1] == reduce(mul, self.num_blocks) * self.block_size
+
+    def delete_block(self, x, block_idx):
+        start_idx, end_idx = self._expand_block_idx(block_idx)
+        if len(x.shape) == 2:
+            x = np.delete(x, np.arange(start_idx, end_idx), 1)
+        else:
+            x = np.delete(x, np.arange(start_idx, end_idx))
+        #self.num_blocks[0] = self.num_blocks[0] - 1
         return x
+
+    def set_block(self, x, block_idx, val):
+        start_idx, end_idx = self._expand_block_idx(block_idx)
+        if len(x.shape) == 2:
+            x[:, start_idx:end_idx] = val 
+        else:
+            x[start_idx:end_idx] = val
+        return x
+
