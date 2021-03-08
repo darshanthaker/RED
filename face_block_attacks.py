@@ -100,6 +100,8 @@ class Trainer(object):
                 num_classes=self.num_classes)
         else:
             self.net = NN(self.d, 256, self.num_classes, linear=linear) 
+        if torch.cuda.is_available():
+            self.net = self.net.cuda()
         self.bsz = bsz
         self.loss_fn = nn.CrossEntropyLoss()
         #self.loss_fn = nn.MultiMarginLoss()
@@ -178,6 +180,10 @@ class Trainer(object):
                 if not self.use_cnn:
                     bx = bx.flatten(1)
 
+                if torch.cuda.is_available():
+                    bx = bx.cuda()
+                    by = by.cuda()
+
                 self.net.train()
                 output = self.net.forward(bx.float())
                 loss = self.loss_fn(output, by)
@@ -212,6 +218,9 @@ class Trainer(object):
                 if not self.use_cnn:
                     bx = bx.squeeze()
                     bx = bx.flatten(1)
+                if torch.cuda.is_available():
+                    bx = bx.cuda()
+                    by = by.cuda()
                 output = self.net.forward(bx.float())
                 pred = output.data.argmax(1)
                 num_correct += pred.eq(by.data.view_as(pred)).sum().item()
@@ -244,11 +253,15 @@ class Trainer(object):
         by = torch.from_numpy(self.train_y)
         if not self.use_cnn: 
             bx = bx.flatten(1)
+        if torch.cuda.is_available():
+            bx = bx.cuda()
+            by = by.cuda()
 
         out = self._lp_attack(lp, eps, bx, by, only_delta=True)
         dictionary = out
         dictionary = dictionary.reshape((dictionary.shape[0], -1))
 
+        by = by.cpu()
         for label in range(self.num_classes):
             blocks[label] = dictionary[torch.nonzero(by == label).squeeze()]
         if block:
@@ -258,17 +271,21 @@ class Trainer(object):
         else:
             return dictionary.T
 
-    def _lp_attack(self, lp, eps, bx, by, debug=False, only_delta=False, scale=True):
+    def _lp_attack(self, lp, eps, bx, by, debug=False, only_delta=False, scale=False):
         d = bx.shape[1]
-        bx.requires_grad = True
-        loss = self.loss_fn(self.net(bx.float()), by)
-        self.net.zero_grad()
-        loss.backward()
-        data_grad = bx.grad.data
 
+        if torch.cuda.is_available():
+            bx = bx.cuda()
+            by = by.cuda()
         if scale:
+            #bx.requires_grad = True
+            #loss = self.loss_fn(self.net(bx.float()), by)
+            #self.net.zero_grad()
+            #loss.backward()
+            #data_grad = bx.grad.data
+
             linf = bx + eps * data_grad.sign()
-            l2 = bx + eps * d**0.5 * data_grad / torch.stack(d*[data_grad.norm(dim=1) + 1e-8]).T
+            l2 = bx + eps * d**0.5 * data_grad / torch.stack(d*[data_grad.norm(dim=2) + 1e-8]).T
             adversary = SparseL1DescentAttack(
                 self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=d*eps,
                 nb_iter=150, eps_iter=eps, rand_init=True, clip_min=-np.inf, clip_max=np.inf,
@@ -288,7 +305,9 @@ class Trainer(object):
           
             self.net.zero_grad()
             self.net.eval()
-            fmodel = foolbox.models.PyTorchModel(self.net, bounds=(0, 1)) 
+            fmodel = foolbox.models.PyTorchModel(self.net, bounds=(0, 1), cuda=True) 
+            #if torch.cuda.is_available():
+            #    fmodel = fmodel.gpu()
             criterion = Misclassification(by) 
             if lp == np.infty: 
                 linf_adv = FGSM()
@@ -298,11 +317,11 @@ class Trainer(object):
                 #set_trace()
                 if only_delta:
                     linf = linf - bx
-                linf = linf.detach().numpy()
+                linf = linf.cpu().detach().numpy()
                 return linf
 
             elif lp == 2:
-                l2_adv = L2PGD(rel_stepsize=0.1, steps=200)
+                l2_adv = L2PGD(abs_stepsize=0.1, steps=200)
                 l2_adversary = L2PGDAttack(
                     self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
                     nb_iter=200, eps_iter=0.1, rand_init=True, clip_min=0, clip_max=1,
@@ -314,7 +333,7 @@ class Trainer(object):
                 #l2 = l2_adversary.perturb(bx, by)
                 if only_delta:
                     l2 = l2 - bx
-                l2 = l2.detach().numpy()
+                l2 = l2.cpu().detach().numpy()
                 return l2
            
             elif lp == 1: 
@@ -329,7 +348,7 @@ class Trainer(object):
                 l1 = l1[0]
                 if only_delta:
                     l1 = l1 - bx
-                l1 = l1.detach().numpy()
+                l1 = l1.cpu().detach().numpy()
                 return l1
 
         if debug:
@@ -673,11 +692,11 @@ def irls(trainer, toolchain, lp):
 def main():
     np.random.seed(0)
     trainer = Trainer(arch=ARCH, dataset=DATASET, bsz=128)
-    trainer.train(50, 0.01) 
+    #trainer.train(50, 0.01) 
     trainer.net.load_state_dict(torch.load('pretrained_model_ce_{}_{}.pth'.format(ARCH, DATASET)))
     test_acc = trainer.evaluate(test=True)
     print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
-    irls(trainer, TOOLCHAIN, np.infty)
+    irls(trainer, TOOLCHAIN, 2)
     #serialize_dictionaries(trainer, toolchain)
 
 main()
