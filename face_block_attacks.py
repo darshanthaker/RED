@@ -12,6 +12,7 @@ import re
 import matplotlib.pyplot as plt
 import foolbox
 import utils
+import copy
 
 from PIL import Image
 from cvxpy.atoms.norm import norm
@@ -24,22 +25,47 @@ from scipy.linalg import orth
 from scipy.sparse.linalg import svds
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
-from advertorch.attacks import SparseL1DescentAttack, L2PGDAttack
+from advertorch.attacks import SparseL1DescentAttack, L2PGDAttack, LinfPGDAttack
 from foolbox.attacks import FGSM, L2PGD, L1PGD
 from foolbox.criteria import Misclassification
 from foolbox.utils import samples
+from cleverhans.torch.attacks.fast_gradient_method import fast_gradient_method
+from cleverhans.torch.attacks.projected_gradient_descent import projected_gradient_descent
+from kymatio.torch import Scattering2D
+from functional import pgd
 from irls import BlockSparseIRLSSolver
 
 DATASET = 'mnist'
 ARCH = 'carlini_cnn'
-TOOLCHAIN = [2, np.infty]
-#EPS = {'mnist': {1: 10.0, \
-#       2: 2.0, \
-#       np.infty: 0.3}}
-EPS = {'mnist': {1: 0.25, \
-       2: 0.3, \
-       np.infty: 0.3}}
+EMBEDDING = None
+LP = np.infty
+TOOLCHAIN = [1, 2, np.infty]
+EPS = {'mnist': {1: 10., \
+       2: 2., \
+       np.infty: 0.3}, \
+       'cifar': {1: 12., \
+        2: 0.5, \
+        np.infty: 0.03},
+        'yale': {1: 0.3, \
+        2: 0.3,
+        np.infty: 0.3}}
+#EPS = {'mnist': {1: 0.3, \
+#       2: 0.3, \
+#       np.infty: 0.3}, \
+#       'cifar': {1: 12., \
+#        2: 0.5, \
+#        np.infty: 0.03}}
+STEP = {'mnist': {1: 1.0, \
+        2: 0.5, \
+        np.infty: 0.01}, \
+        'cifar': {1: 1.0, \
+        2: 0.02, \
+        np.infty: 0.003}, \
+        'yale': {1: 1.0, \
+        2: 0.02, \
+        np.infty: 0.003}}
 EPS = EPS[DATASET]
+STEP = STEP[DATASET]
 MEAN_MAP = {'yale': 0.2728, \
             'cifar': [0.4913997551666284, 0.48215855929893703, 0.4465309133731618], \
             'mnist':  0.1307}
@@ -49,6 +75,8 @@ STD_MAP = {'yale': 0.2453, \
 SIZE_MAP = {'yale': 20, \
             'cifar': 200, \
             'mnist': 200}
+
+
 
 class YaleDataset(Dataset):
 
@@ -80,26 +108,40 @@ class YaleDataset(Dataset):
 
 class Trainer(object):
 
-    def __init__(self, arch='carlini_cnn', dataset='yale', bsz=128):
+    def __init__(self, arch='carlini_cnn', dataset='yale', bsz=128, embedding=None):
         self.arch = arch
         self.use_cnn = 'cnn' in arch
         self.dataset = dataset
+        self.embedding = embedding
+        self.J = 2
+        self.L = 8
         if self.dataset == 'yale':
             self.d = 1400
             self.num_classes = 38
+            self.in_channels = 1
         elif self.dataset == 'cifar':
+            self.input_shape = (32, 32)
             self.d = 32*32*3
             self.num_classes = 10
-            self.in_channels = 3
+            if self.embedding is None:
+                self.in_channels = 3
+            else:
+                self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
         elif self.dataset == 'mnist':
+            self.input_shape= (28, 28)
             self.d = 28*28
             self.num_classes = 10
-            self.in_channels = 1
+            if self.embedding is None:
+                self.in_channels = 1
+            else:
+                self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
         if self.use_cnn:
-            self.net = CNN(arch=self.arch, in_channels=self.in_channels,
+            d_arch = '{}_{}'.format(self.arch, self.dataset)
+            self.net = CNN(arch=d_arch, embedding=self.embedding, in_channels=self.in_channels,
                 num_classes=self.num_classes)
         else:
             self.net = NN(self.d, 256, self.num_classes, linear=linear) 
+        #self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
         if torch.cuda.is_available():
             self.net = self.net.cuda()
         self.bsz = bsz
@@ -109,9 +151,15 @@ class Trainer(object):
 
     # Normalize image to [0, 1] and then standardize.
     def preprocess_data(self):
-        transform = transforms.Compose(
-                [transforms.ToTensor()])
-                # transforms.Normalize((MEAN_MAP[self.dataset]), (STD_MAP[self.dataset]))])
+        if self.embedding is None: 
+            transform = transforms.Compose(
+                    [transforms.ToTensor()])
+                    # transforms.Normalize((MEAN_MAP[self.dataset]), (STD_MAP[self.dataset]))])
+        elif self.embedding == 'scattering':
+            transform = transforms.Compose(
+                    [transforms.ToTensor(),
+                     self.scattering])
+                    # transforms.Normalize((MEAN_MAP[self.dataset]), (STD_MAP[self.dataset]))])
 
         if self.dataset == 'yale':
             data = parse_yale_data()
@@ -223,6 +271,10 @@ class Trainer(object):
                     by = by.cuda()
                 output = self.net.forward(bx.float())
                 pred = output.data.argmax(1)
+                #print("pred: {}".format(pred))
+                #print("by : {}".format(by))
+                #if given_examples is not None:
+                #    set_trace()
                 num_correct += pred.eq(by.data.view_as(pred)).sum().item()
         if given_examples is not None:
             acc = num_correct / len(by) * 100.
@@ -231,13 +283,22 @@ class Trainer(object):
             
         return acc
 
-    def compute_train_dictionary(self, normalize_cols=True, embedding=None):
+    def compute_train_dictionary(self, normalize_cols=True):
         train = self.train_full
         dictionary = list()
         for pid in range(len(train)):
             for i in range(train[pid].shape[0]):
                 x = train[pid][i, :, :]
-                dictionary.append(x.reshape(-1))
+                if self.embedding is None:
+                    dictionary.append(x.reshape(-1))
+                elif self.embedding == 'scattering':
+                    x = torch.from_numpy(x).unsqueeze(0)
+                    if torch.cuda.is_available():
+                        x = x.cuda()
+                    embed_x = self.scattering(x).cpu().detach().numpy()
+                    set_trace()
+                    dictionary.append(embed_x.reshape(-1))
+                       
         dictionary = np.array(dictionary).T
         if normalize_cols:
             return normalize(dictionary, axis=0)
@@ -257,9 +318,15 @@ class Trainer(object):
             bx = bx.cuda()
             by = by.cuda()
 
-        out = self._lp_attack(lp, eps, bx, by, only_delta=True)
-        dictionary = out
-        dictionary = dictionary.reshape((dictionary.shape[0], -1))
+        step = 2000
+        dictionary = list()
+        for i in range(0, bx.shape[0], step):
+            batch_x = bx[i:i+step]
+            batch_y = by[i:i+step]
+            out = self._lp_attack(lp, eps, batch_x, batch_y, only_delta=True)
+            out = out.reshape((out.shape[0], -1))
+            dictionary.append(out)
+        dictionary = np.concatenate(dictionary)
 
         by = by.cpu()
         for label in range(self.num_classes):
@@ -272,20 +339,26 @@ class Trainer(object):
             return dictionary.T
 
     def _lp_attack(self, lp, eps, bx, by, debug=False, only_delta=False, scale=False):
-        d = bx.shape[1]
+        d = bx.flatten(1).shape[1]
 
         if torch.cuda.is_available():
             bx = bx.cuda()
             by = by.cuda()
         if scale:
-            #bx.requires_grad = True
-            #loss = self.loss_fn(self.net(bx.float()), by)
-            #self.net.zero_grad()
-            #loss.backward()
-            #data_grad = bx.grad.data
+            bx.requires_grad = True
+            loss = self.loss_fn(self.net(bx.float()), by)
+            self.net.zero_grad()
+            loss.backward()
+            data_grad = bx.grad.data
 
+            #eps = 0.3
+            print("Linf eps: {}".format(eps))
+            print("L2 eps: {}".format(eps * d **0.5))
+            print("L1 eps: {}".format(eps * d))
             linf = bx + eps * data_grad.sign()
-            l2 = bx + eps * d**0.5 * data_grad / torch.stack(d*[data_grad.norm(dim=2) + 1e-8]).T
+            grad_norm = data_grad.flatten(1).norm(dim=1)
+            stacked_norm = torch.stack(d*[grad_norm + 1e-8]).T.reshape(-1, 1, 28, 28)
+            l2 = bx + eps * d**0.5 * data_grad / stacked_norm
             adversary = SparseL1DescentAttack(
                 self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=d*eps,
                 nb_iter=150, eps_iter=eps, rand_init=True, clip_min=-np.inf, clip_max=np.inf,
@@ -296,56 +369,98 @@ class Trainer(object):
                 linf = linf - bx
                 l2 = l2 - bx
                 l1 - l1 - bx 
-            linf = linf.detach().numpy()
-            l2 = l2.detach().numpy()
-            l1 = l1.detach().numpy()
+            linf = linf.cpu().detach().numpy()
+            l2 = l2.cpu().detach().numpy()
+            l1 = l1.cpu().detach().numpy()
         else:
             #linf = bx + eps * data_grad.sign()
             #l2 = bx + eps * data_grad / torch.stack(d*[data_grad.norm(dim=1) + 1e-8]).T
           
-            self.net.zero_grad()
-            self.net.eval()
-            fmodel = foolbox.models.PyTorchModel(self.net, bounds=(0, 1), cuda=True) 
+            #self.net.zero_grad()
+            #fmodel = foolbox.models.PyTorchModel(self.net, bounds=(0, 1)) 
             #if torch.cuda.is_available():
             #    fmodel = fmodel.gpu()
-            criterion = Misclassification(by) 
+            #criterion = Misclassification(by) 
+            step_size = STEP[lp]
+    
+
+            #out = projected_gradient_descent(self.net, bx, eps, step_size, 200, lp, 
+            #            #clip_min=0, clip_max=1)
+            #out = pgd(self.net, bx, by, torch.nn.CrossEntropyLoss(), k=200, step=0.1, eps=eps, norm=lp)
+            #if only_delta:
+            #    out = out - bx
+            
+            #if self.embedding == 'scattering':
+            #    out = self.scattering(out)
+            #out = out.cpu().detach().numpy()
+            #return out
+
+            #bx.requires_grad = True
+            self.net.eval()
+            self.net.zero_grad()
+            #loss = self.loss_fn(self.net(bx.float()), by)
+            #loss.backward()
+            #data_grad = copy.deepcopy(bx.grad.data.detach())
+            #bx.grad.zero_()
+
             if lp == np.infty: 
-                linf_adv = FGSM()
-                _, linf, _ = linf_adv(fmodel, bx, criterion, epsilons=[eps])
-                linf = linf[0]
+                #linf_adv = FGSM()
+                #_, linf, _ = linf_adv(fmodel, bx, criterion, epsilons=[eps])
+                #linf = linf[0]
+                #linf = projected_gradient_descent(self.net, bx, eps, step_size, 200, np.infty, 
+                #        clip_min=0, clip_max=1)
                 #linf = bx + eps * data_grad.sign()
+                #linf = torch.clip(linf, min=0, max=1)
                 #set_trace()
+                linf_adversary = LinfPGDAttack(
+                    self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
+                    nb_iter=100, eps_iter=0.01, rand_init=True, clip_min=0, clip_max=1,
+                    targeted=False)
+                linf = linf_adversary.perturb(bx, by)
                 if only_delta:
                     linf = linf - bx
                 linf = linf.cpu().detach().numpy()
                 return linf
 
             elif lp == 2:
-                l2_adv = L2PGD(abs_stepsize=0.1, steps=200)
+                #l2_adv = L2PGD(abs_stepsize=0.1, steps=200)
                 l2_adversary = L2PGDAttack(
                     self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
                     nb_iter=200, eps_iter=0.1, rand_init=True, clip_min=0, clip_max=1,
                     targeted=False)
+                #l2 = fast_gradient_method(self.net, bx, eps, 2, clip_min=0, clip_max=1)
+                #l2 = projected_gradient_descent(self.net, bx, eps, step_size, 200, 2, 
+                #            clip_min=0, clip_max=1)
                 #images, labels = samples(fmodel, dataset="mnist", batchsize=20) 
                 #set_trace()
-                _, l2, _  = l2_adv(fmodel, bx, criterion, epsilons=[eps])
-                l2 = l2[0]
-                #l2 = l2_adversary.perturb(bx, by)
+                #_, l2, _  = l2_adv(fmodel, bx, criterion, epsilons=[eps])
+                #l2 = l2[0]
+                l2 = l2_adversary.perturb(bx, by)
+
+                #set_trace()
+
+                #grad_norm = data_grad.flatten(1).norm(dim=1)
+                #stacked_norm = torch.stack(d*[grad_norm + 1e-8]).T.reshape(-1, 1, 28, 28)
+                #l2 = bx + eps * data_grad / stacked_norm
                 if only_delta:
                     l2 = l2 - bx
                 l2 = l2.cpu().detach().numpy()
+                #acc = self.evaluate(given_examples=(l2, by.cpu().detach().numpy()))
+                #print("[L2 Func] Adversarial accuracy: {}".format(acc))
                 return l2
            
             elif lp == 1: 
-                l1_adv = L1PGD(rel_stepsize=1.0, steps=200)
+                #l1_adv = L1PGD(rel_stepsize=1.0, steps=200)
                 l1_adversary = SparseL1DescentAttack(
                     self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
-                    nb_iter=200, eps_iter=10.0, rand_init=True, clip_min=0, clip_max=1,
+                    nb_iter=200, eps_iter=0.8, rand_init=True, clip_min=0, clip_max=1,
                     targeted=False)
+                #l1 = projected_gradient_descent(self.net, bx, eps, step_size, 200, 1, 
+                #            clip_min=0, clip_max=1)
                 #set_trace()
-                #l1 = l1_adversary.perturb(bx, by)
-                _, l1, _ = l1_adv(fmodel, bx, criterion, epsilons=[eps])
-                l1 = l1[0]
+                l1 = l1_adversary.perturb(bx, by)
+                #_, l1, _ = l1_adv(fmodel, bx, criterion, epsilons=[eps])
+                #l1 = l1[0]
                 if only_delta:
                     l1 = l1 - bx
                 l1 = l1.cpu().detach().numpy()
@@ -470,21 +585,21 @@ def serialize_dictionaries(trainer, toolchain):
 
     all_attacks = list()
     for lp in toolchain:
-        test_adv = trainer.test_lp_attack(lp, test_idx, EPS[attack], realizable=False)
+        test_adv = trainer.test_lp_attack(lp, test_idx, EPS[lp], realizable=False)
         all_attacks.append(test_adv)
 
         acc = trainer.evaluate(given_examples=(test_adv, trainer.test_y[test_idx]))
         print("[L{}] Adversarial accuracy: {}".format(lp, acc))
         if lp == np.infty:
-            scipy.io.savemat('mats/{}_ce/linf_eps{}.mat'.format(dst, EPS[attack]), {'data': test_adv})
+            scipy.io.savemat('mats/{}_ce/linf_eps{}.mat'.format(dst, EPS[lp]), {'data': test_adv})
         elif lp == 2:
-            scipy.io.savemat('mats/{}_ce/l2_eps{}.mat'.format(dst, EPS[attack]), {'data': test_adv})
+            scipy.io.savemat('mats/{}_ce/l2_eps{}.mat'.format(dst, EPS[lp]), {'data': test_adv})
         elif lp == 1:
-            scipy.io.savemat('mats/{}_ce/l1_eps{}.mat'.format(dst, EPS[attack]), {'data': test_adv})
+            scipy.io.savemat('mats/{}_ce/l1_eps{}.mat'.format(dst, EPS[lp]), {'data': test_adv})
 
-    all_attacks = np.array(all_attacks)
-    avg = np.mean(all_attacks, axis=0)
-    scipy.io.savemat('mats/{}_ce/avg_eps{}.mat'.format(dst, EPS[np.infty]), {'data': avg})
+    #all_attacks = np.array(all_attacks)
+    #avg = np.mean(all_attacks, axis=0)
+    #scipy.io.savemat('mats/{}_ce/avg_eps{}.mat'.format(dst, EPS[np.infty]), {'data': avg})
 
 def analyze(trainer, lp):
     epss = pickle.load(open('outs/epss_{}.pkl'.format(lp), 'rb'))
@@ -632,8 +747,8 @@ def eps_plot(trainer):
         plt.show()
     set_trace()    
 
-def irls(trainer, toolchain, lp):
-    print("L{} attacks, eps = {}".format(lp, EPS[lp]))
+def irls(trainer, toolchain, lp, eps):
+    print("L{} attacks, eps = {}".format(lp, eps))
     attack_dicts = list()
     for attack in toolchain:
         attack_dicts.append(trainer.compute_lp_dictionary(EPS[attack], attack))
@@ -647,19 +762,19 @@ def irls(trainer, toolchain, lp):
     sz = SIZE_MAP[dst]
     num_attacks = len(toolchain)
     
-    test_adv = trainer.test_lp_attack(lp, test_idx, EPS[attack], realizable=False)
+    test_adv = trainer.test_lp_attack(lp, test_idx, eps, realizable=False)
     acc = trainer.evaluate(given_examples=(test_adv, test_y))
     print("[L{}] Adversarial accuracy: {}%".format(lp, acc))
 
     solver = BlockSparseIRLSSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
-            lambda1=3, lambda2=15)
+            lambda1=3, lambda2=15, del_threshold=0.5)
     class_preds = list()
     attack_preds = list()
     denoised = list()
     for t in range(100):
         if t % 5 == 0:
             print(t)
-        x = test_adv[t, :, :]
+        x = test_adv[t, :]
         x = x.reshape(-1)
         cs_est, ca_est, Ds_est, Da_est, err_cs, ws, wa, active_classes = solver.solve(x)
 
@@ -685,18 +800,41 @@ def irls(trainer, toolchain, lp):
     denoised = np.array(denoised)
     signal_acc = np.sum(class_preds == test_y[:100])
     attack_acc = np.sum(attack_preds == toolchain.index(lp))
+    denoised = denoised.reshape((100, 1, 28, 28))
+    denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:100]))
     print("Signal classification accuracy: {}%".format(signal_acc))
     print("Attack detection accuracy: {}%".format(attack_acc))
+    print("Denoised accuracy: {}%".format(denoised_acc))
     set_trace()
 
 def main():
     np.random.seed(0)
-    trainer = Trainer(arch=ARCH, dataset=DATASET, bsz=128)
+    trainer = Trainer(arch=ARCH, dataset=DATASET, bsz=128, embedding=EMBEDDING)
     #trainer.train(50, 0.01) 
     trainer.net.load_state_dict(torch.load('pretrained_model_ce_{}_{}.pth'.format(ARCH, DATASET)))
     test_acc = trainer.evaluate(test=True)
     print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
-    irls(trainer, TOOLCHAIN, 2)
-    #serialize_dictionaries(trainer, toolchain)
+    #irls(trainer, TOOLCHAIN, LP, EPS[LP])
+    serialize_dictionaries(trainer, TOOLCHAIN)
 
+
+def _test_linf():
+    print("------TESTING------")
+    np.random.seed(0)
+    trainer = Trainer(arch=ARCH, dataset=DATASET, bsz=128, embedding=None)
+    #trainer.train(2, 0.01) 
+    trainer.net.load_state_dict(torch.load('pretrained_model_ce_{}_{}.pth'.format(ARCH, DATASET)))
+    test_acc = trainer.evaluate(test=True)
+    print("Clean test accuracy: {}%".format(test_acc))
+
+    np.random.seed(0)
+    test_idx = np.random.choice(list(range(trainer.N_test)), 324)
+    test_y = trainer.test_y[test_idx]
+    
+    test_adv = trainer.test_lp_attack(2, test_idx, 2., realizable=False)
+    acc = trainer.evaluate(given_examples=(test_adv, test_y))
+    print("[L{}] Adversarial accuracy: {}%".format(2, acc))
+    print("------END TESTING------")
+
+#_test_linf()
 main()

@@ -28,10 +28,17 @@ class NN(nn.Module):
 
 class CNN(nn.Module):
 
-    def __init__(self, arch, in_channels=3, num_classes=10, linear=False):
+    def __init__(self, arch, embedding=None, in_channels=3, num_classes=10, linear=False):
         super().__init__()
-        if arch == 'carlini_cnn':
+        if arch == 'carlini_cnn_mnist':
             cfg = [32, 32, 'M', 64, 64, 'M']
+            if embedding is None:
+                output_size = 64*4*4
+            else:
+                output_size = 64
+        else:
+            cfg = [64, 64, 'M', 128, 128, 'M']
+            output_size = 3200
 
         layers = []
         for v in cfg:
@@ -44,12 +51,12 @@ class CNN(nn.Module):
         self.features = nn.ModuleList(layers)
 
         self.classifier = nn.ModuleList([
-            nn.Linear(64 * 4 * 4, 200),
+            nn.Linear(output_size, 200),
             nn.ReLU(),
-            nn.Dropout(),
             nn.Linear(200, 200),
             nn.ReLU(),
             nn.Linear(200, num_classes)])
+
           
     def forward(self, x):
         for layer in self.features:
