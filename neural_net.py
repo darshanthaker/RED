@@ -36,9 +36,12 @@ class CNN(nn.Module):
                 output_size = 64*4*4
             else:
                 output_size = 64
-        else:
+        elif arch == 'carlini_cnn_cifar':
             cfg = [64, 64, 'M', 128, 128, 'M']
             output_size = 3200
+        elif arch == 'carlini_cnn_yale':
+            cfg = [32, 32, 'M', 64, 64, 'M']
+            output_size = 2240
 
         layers = []
         for v in cfg:

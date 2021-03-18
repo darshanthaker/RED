@@ -36,9 +36,12 @@ from functional import pgd
 from irls import BlockSparseIRLSSolver
 
 DATASET = 'mnist'
+#DATASET = 'yale'
 ARCH = 'carlini_cnn'
+#ARCH = 'dense'
 EMBEDDING = None
-LP = np.infty
+ALG = 4
+LP = 1
 TOOLCHAIN = [1, 2, np.infty]
 EPS = {'mnist': {1: 10., \
        2: 2., \
@@ -46,9 +49,9 @@ EPS = {'mnist': {1: 10., \
        'cifar': {1: 12., \
         2: 0.5, \
         np.infty: 0.03},
-        'yale': {1: 0.3, \
-        2: 0.3,
-        np.infty: 0.3}}
+        'yale': {1: 15., \
+        2: 5.,
+        np.infty: 0.1}}
 #EPS = {'mnist': {1: 0.3, \
 #       2: 0.3, \
 #       np.infty: 0.3}, \
@@ -140,7 +143,7 @@ class Trainer(object):
             self.net = CNN(arch=d_arch, embedding=self.embedding, in_channels=self.in_channels,
                 num_classes=self.num_classes)
         else:
-            self.net = NN(self.d, 256, self.num_classes, linear=linear) 
+            self.net = NN(self.d, 256, self.num_classes, linear=False) 
         #self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
         if torch.cuda.is_available():
             self.net = self.net.cuda()
@@ -339,6 +342,11 @@ class Trainer(object):
             return dictionary.T
 
     def _lp_attack(self, lp, eps, bx, by, debug=False, only_delta=False, scale=False):
+        if eps == 0:
+            if only_delta:
+                return (bx - bx).detach().numpy()
+            else:
+                return bx.detach().numpy()
         d = bx.flatten(1).shape[1]
 
         if torch.cuda.is_available():
@@ -661,10 +669,10 @@ def backtest(trainer, mat):
     print("Backtest accuracy: {}%".format(test_acc))
 
 def baseline(trainer, test_adv, test_y):
-    Ds = compute_dictionary(trainer.train_full)
+    Ds = trainer.compute_train_dictionary(trainer.train_full)
     s_len = Ds.shape[1]
 
-    thres = 10
+    thres = 5
     pred = list()
     for i in range(test_adv.shape[0]):
         if i % 10 == 0:
@@ -698,14 +706,46 @@ def baseline(trainer, test_adv, test_y):
 
 def eps_plot(trainer):
     epss = [0.05, 0.07, 0.10, 0.15, 0.20, 0.25, 0.30]
-    atts = ['l2', 'linf']
+    atts = ['l2', 'l1', 'linf']
     att_map = {'l2': 2, 'linf': np.inf}
     result_map = {'l2': {'signal': [], 'att': [], 'test': [], 'backtest': [], 'baseline': []}, 
                   'linf': {'signal': [], 'att': [], 'test': [], 'backtest': [], 'baseline': []}}
 
-    np.random.seed(0)
-    test_idx = np.random.choice(list(range(trainer.N_test)), 324)[:100]
-    test_y = scipy.io.loadmat('mats/mnist_ce/test_y.mat')['data'][0, :100]
+    result_map = {'linf': {'eps': [0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30], 
+                           'signal': [94, 89, 85, 82, 73, 63, 56],
+                           'att': [24, 50, 88, 93, 92, 91, 86],
+                           'test': [98.99, 93.21, 62.96, 22.53, 5.55, 2.5, 2.5],
+                           'backtest': [99, 96, 65, 31, 6, 2.5, 3],
+                           'baseline': [92, 84, 82, 73, 72, 66, 54]},
+                  'l2': {'eps': [0, 0.3, 0.6, 1, 1.3, 1.6, 2], 
+                           'signal': [94, 93, 89, 86, 85, 82, 80],
+                           'att': [34, 35, 39, 43, 45, 42, 41],
+                           'test': [98.99, 97.53, 92.90, 74.38, 55.86, 50, 44.75],
+                           'backtest': [99, 99, 95, 73, 59, 52, 47],
+                           'baseline': [92, 89, 85, 84, 81, 79, 76]},
+                  'l1': {'eps': [0, 1.5, 3, 5, 6.5, 8, 10], 
+                           'signal': [94, 93, 90, 85, 85, 85, 82],
+                           'att': [44, 44, 47, 52, 55, 59, 66],
+                           'test': [98.99, 98.45, 95.68, 90.12, 79.63, 63.88, 41.97],
+                           'backtest': [99, 99, 96, 93, 80, 62, 41],
+                           'baseline': [92, 87, 84, 83, 81, 78, 75]}}
+
+    baseline_map = {'linf': {'name': ['M1', 'M2', 'Minf', 'MAX', 'AVG', 'MSD'],
+                             'eps_t': [0.287, 0.3, 0.3, 0.3, 0.3, 0.282], 
+                             'eps': [0.3, 0.3, 0.3, 0.3, 0.3, 0.3], 
+                             'acc': [0, 0.4, 90.3, 51, 65.2, 62.7]},
+                    'l2': {'name': ['M1', 'M2', 'Minf', 'MAX', 'AVG', 'MSD'],
+                             'eps_t': [2, 1.9, 2, 2, 1.9, 2],
+                             'eps': [2, 2, 2, 2, 2, 2],
+                             'acc': [38.7, 70.2, 66.8, 64.1, 66.9, 70.2]},
+                    'l1': {'name': ['M1', 'M2', 'Minf', 'MAX', 'AVG', 'MSD'],
+                             'eps_t': [10, 10, 9.5, 10, 10, 10],
+                             'eps': [10, 10, 10, 10, 10, 10],
+                             'acc': [74.6, 51.1, 61.8, 61.2, 66.5, 70.4]}}
+                
+    #np.random.seed(0)
+    #test_idx = np.random.choice(list(range(trainer.N_test)), 324)[:100]
+    #test_y = scipy.io.loadmat('mats/mnist_ce/test_y.mat')['data'][0, :100]
     """
     for eps in epss:
         for (idx, att) in enumerate(atts):
@@ -730,22 +770,40 @@ def eps_plot(trainer):
             result_map[att]['baseline'].append(baseline_acc)
     """
 
-    result_map = pickle.load(open('mats/mnist_recon/result_map.pkl', 'rb'))
+    #result_map = pickle.load(open('mats/mnist_recon/result_map.pkl', 'rb'))
 
-    for att in atts:
-        plt.plot(epss, result_map[att]['signal'], label='Signal Classification', marker='*')
-        plt.plot(epss, result_map[att]['att'], label='Attack Detection', marker='*')
-        plt.plot(epss, result_map[att]['test'], label='NN Adversarial', marker='*')
-        plt.plot(epss, result_map[att]['backtest'], label='NN Denoising', marker='*')
-        plt.plot(epss, result_map[att]['baseline'], label='Baseline', marker='*')
-        plt.legend()
-        plt.grid()
-        plt.xlabel('Epsilon of Perturbation')
-        plt.ylabel('Accuracy')
-        plt.yticks(np.arange(0, 101, 10))
-        plt.title('Test Accuracies for 100 data points perturbed with {} attack'.format(att))
-        plt.show()
-    set_trace()    
+    fig, axes = plt.subplots(1, 3, figsize=(6.4*3, 4.8))
+    dual_axes = list()
+    for (ax1, att) in zip(axes, ['l1', 'l2', 'linf']):
+        #fig, ax1 = plt.subplots()
+        ax2 = ax1.twinx()
+        dual_axes.append(ax2)
+        ax1.plot(result_map[att]['eps'], result_map[att]['signal'], label='SBSC', marker='*', markersize=7)
+        ax2.plot(result_map[att]['eps'], result_map[att]['att'], label='AD', linestyle='--', marker='s', color='black', markerfacecolor='none')
+        ax1.plot(result_map[att]['eps'], result_map[att]['test'], label='No Defense', marker='*', markersize=7)
+        ax1.plot(result_map[att]['eps'], result_map[att]['backtest'], label='SBSC+CNN', marker='*', markersize=7)
+        ax1.plot(result_map[att]['eps'], result_map[att]['baseline'], label='BSC', marker='*', markersize=7)
+        bm = baseline_map[att]
+        #plt.scatter(bm['eps'], bm['acc'], marker='o', color='black', s=7.5)
+        for (name, eps, acc) in zip(bm['name'], bm['eps'], bm['acc']):
+            ax1.scatter(eps, acc, label=name, marker='x')
+            #plt.annotate(name, (eps, acc+1), fontsize=8)
+        #ax1.legend(prop={'size': 9})
+        #ax2.legend(prop={'size': 9}, handlelength=3)
+        ax1.grid()
+        ax1.set_yticks(np.arange(0, 101, 10))
+        ax2.set_yticks(np.arange(0, 101, 10))
+        ax1.set_xlabel('{} Epsilon'.format(att))
+    #fig.set_xlabel('Epsilon of Perturbation')
+    #fig.set_ylabel('Signal Classification Accuracy')
+    #fig.set_ylabel('Attack Detection Accuracy')
+    axes[0].set_ylabel('Signal Classification Accuracy')
+    dual_axes[-1].set_ylabel('Attack Detection Accuracy')
+    plt.savefig('all_mnist.png')
+        #ax1.cla()
+        #ax2.cla()
+        #fig.clf() 
+        #plt.clf()
 
 def irls(trainer, toolchain, lp, eps):
     print("L{} attacks, eps = {}".format(lp, eps))
@@ -763,11 +821,16 @@ def irls(trainer, toolchain, lp, eps):
     num_attacks = len(toolchain)
     
     test_adv = trainer.test_lp_attack(lp, test_idx, eps, realizable=False)
+    #bx = trainer.test_X[test_idx, :, :]
+    #set_trace()
     acc = trainer.evaluate(given_examples=(test_adv, test_y))
     print("[L{}] Adversarial accuracy: {}%".format(lp, acc))
+    #bacc = baseline(trainer, test_adv[:100, :], test_y[:100])
+    #print("Baseline accuracy: {}%".format(bacc))
+    #return
 
     solver = BlockSparseIRLSSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
-            lambda1=3, lambda2=15, del_threshold=0.5)
+            lambda1=5, lambda2=15, del_threshold=0.2)
     class_preds = list()
     attack_preds = list()
     denoised = list()
@@ -776,7 +839,7 @@ def irls(trainer, toolchain, lp, eps):
             print(t)
         x = test_adv[t, :]
         x = x.reshape(-1)
-        cs_est, ca_est, Ds_est, Da_est, err_cs, ws, wa, active_classes = solver.solve(x)
+        cs_est, ca_est, Ds_est, Da_est, err_cs, ws, wa, active_classes = solver.solve(x, alg=ALG)
 
         err_class = list()
         for i in range(solver.sig_bi.num_blocks[0]):
@@ -793,33 +856,50 @@ def irls(trainer, toolchain, lp, eps):
             ca_blk = solver.hier_bi.get_block(ca_est, (i_star, j)) 
             err_attack.append(np.linalg.norm(x - Ds_est@cs_est - Da_blk@ca_blk))
         err_attack = np.array(err_attack)
-        attack_preds.append(np.argmin(err_attack))
-        denoised.append(x - Da_est@ca_est)
+        j_star = np.argmin(err_attack)
+        attack_preds.append(j_star)
+        Da_blk = solver.hier_bi.get_block(Da_est, (i_star, j_star)) 
+        ca_blk = solver.hier_bi.get_block(ca_est, (i_star, j_star)) 
+        denoised.append(x - Da_blk@ca_blk)
     class_preds = np.array(class_preds)
     attack_preds = np.array(attack_preds)
     denoised = np.array(denoised)
     signal_acc = np.sum(class_preds == test_y[:100])
     attack_acc = np.sum(attack_preds == toolchain.index(lp))
-    denoised = denoised.reshape((100, 1, 28, 28))
+    if DATASET == 'mnist':
+        denoised = denoised.reshape((100, 1, 28, 28))
     denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:100]))
     print("Signal classification accuracy: {}%".format(signal_acc))
     print("Attack detection accuracy: {}%".format(attack_acc))
     print("Denoised accuracy: {}%".format(denoised_acc))
-    set_trace()
 
 def main():
     np.random.seed(0)
     trainer = Trainer(arch=ARCH, dataset=DATASET, bsz=128, embedding=EMBEDDING)
-    #trainer.train(50, 0.01) 
+    #trainer.train(75, 0.05) 
     trainer.net.load_state_dict(torch.load('pretrained_model_ce_{}_{}.pth'.format(ARCH, DATASET)))
     test_acc = trainer.evaluate(test=True)
     print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
-    #irls(trainer, TOOLCHAIN, LP, EPS[LP])
-    serialize_dictionaries(trainer, TOOLCHAIN)
+    irls(trainer, TOOLCHAIN, LP, EPS[LP])
+    #serialize_dictionaries(trainer, TOOLCHAIN)
+
+def eps_grid():
+    lp = 1
+    for eps in [0.0, 1.5, 3.0, 5.0, 6.5, 8.0, 10.0]:
+    #for eps in [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30]:
+    #for eps in [0.0, 0.3, 0.6, 1.0, 1.3, 1.6, 2.0]:
+        print("-------------EPS = {}---------------".format(eps))
+        np.random.seed(0)
+        trainer = Trainer(arch=ARCH, dataset=DATASET, bsz=128, embedding=EMBEDDING)
+        #trainer.train(75, 0.05) 
+        trainer.net.load_state_dict(torch.load('pretrained_model_ce_{}_{}.pth'.format(ARCH, DATASET)))
+        test_acc = trainer.evaluate(test=True)
+        print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
+        irls(trainer, TOOLCHAIN, lp, eps)
 
 
 def _test_linf():
-    print("------TESTING------")
+    print("------DEBUG------")
     np.random.seed(0)
     trainer = Trainer(arch=ARCH, dataset=DATASET, bsz=128, embedding=None)
     #trainer.train(2, 0.01) 
@@ -834,7 +914,9 @@ def _test_linf():
     test_adv = trainer.test_lp_attack(2, test_idx, 2., realizable=False)
     acc = trainer.evaluate(given_examples=(test_adv, test_y))
     print("[L{}] Adversarial accuracy: {}%".format(2, acc))
-    print("------END TESTING------")
+    print("------END DEBUG------")
 
 #_test_linf()
-main()
+#main()
+#eps_grid()
+eps_plot(None)
