@@ -2,105 +2,127 @@ import numpy as np
 import re
 import torch
 import math
+import argparse
 
-from operator import mul
-from functools import reduce
 from typing import Union, Tuple
 from torch.nn import Module
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
 from kymatio.torch import Scattering2D
 from pdb import set_trace
 
-SIGNAL = 'signal'
-ATTACK = 'attack'
-ATTACK_F = 'attack_f'
+EPS = {'mnist': {1: 10., \
+       2: 2., \
+       np.infty: 0.3}, \
+       'cifar': {1: 12., \
+        2: 0.5, \
+        np.infty: 0.03},
+        'yale': {1: 15., \
+        2: 5.,
+        np.infty: 0.1}}
+STEP = {'mnist': {1: 0.8, \
+        2: 0.1, \
+        np.infty: 0.01}, \
+        'cifar': {1: 1.0, \
+        2: 0.02, \
+        np.infty: 0.003}, \
+        'yale': {1: 1.0, \
+        2: 0.02, \
+        np.infty: 0.003}}
+SIZE_MAP = {'yale': 20, \
+            'cifar': 200, \
+            'mnist': 200}
 
-def to_tensor_custom(pic):
-    if isinstance(pic, np.ndarray):
-        # handle numpy array
-        if pic.ndim == 2:
-            pic = pic[:, :, None]
+def get_parser(parser):
+    parser.add_argument('--dataset', default='mnist', type=str, help='Dataset to use for experiments')
+    parser.add_argument('--lr', default=0.01, type=float, help='Learning rate for training network')
+    parser.add_argument('--num_epochs', default=5, type=int, help='Number of epochs to train network')
+    parser.add_argument('--bsz', default=128, type=int, help='Batch size')
+    parser.add_argument('--output_dir', default='', type=str, help='output directory')
+    parser.add_argument('--arch', default='carlini_cnn', type=str, help='Network architecture')
+    parser.add_argument('--pretrained_path', default="", type=str, help='Path to find pretrained model')
+    parser.add_argument('--embedding', default=None, type=str, help='Embedding to use')
+    parser.add_argument('--J', default=2, type=float, help='Scattering Transform J')
+    parser.add_argument('--L', default=7, type=float, help='Scattering Transform L')
+    parser.add_argument('--regularizer', default=4, type=int, help='Regularizer to use for IRLS')
+    parser.add_argument('--toolchain', default=[1, 2, np.infty], nargs='+', type=float, help='Toolchain')
+    parser.add_argument('--test_lp', default=np.infty, type=float, help='Lp perturbation type to apply to test points')
+    parser.add_argument('--lambda1', default=5, type=float, help='Lambda1 for IRLS')
+    parser.add_argument('--lambda2', default=15, type=float, help='Lambda2 for IRLS')
+    parser.add_argument('--del_threshold', default=0.2, type=float, help='Del threshold for IRLS')
+    return parser 
 
-        img = torch.from_numpy(pic.transpose((2, 0, 1))).contiguous()
-        # backward compatibility
-        if isinstance(img, torch.ByteTensor):
-            return img.float()
+
+# Format: data is a list of 38 subjects, each who have m_i x 192 x 168 images.
+def parse_yale_data(resize=True):
+    PATH = 'files/CroppedYale'
+
+    data = [0 for _ in range(38)]
+
+    for folder in os.listdir(PATH):
+        if folder.startswith('.'):
+            continue
+        pid = int(folder[5:7])
+        # Because 14 doesn't exist -.-
+        if pid > 14:
+            pid -= 2
         else:
-            return img
+            pid -= 1
+        person_path = os.path.join(PATH, folder)
+        person_images = list()
+        for im_name in os.listdir(person_path):
+            if not im_name.endswith('pgm') or 'Ambient' in im_name:
+                continue
+            im_path = os.path.join(PATH, folder, im_name)
+            if resize:
+                im = np.array(Image.open(im_path).resize((35, 40), resample=Image.LANCZOS))
+            else:
+                im = np.array(Image.open(im_path))
+            im = im[:, :, None]
+            person_images.append(im)
+        person_images = np.array(person_images)
+        data[pid] = person_images
 
-    # handle PIL Image
-    if pic.mode == 'I':
-        img = torch.from_numpy(np.array(pic, np.int32, copy=False))
-    elif pic.mode == 'I;16':
-        img = torch.from_numpy(np.array(pic, np.int16, copy=False))
-    elif pic.mode == 'F':
-        img = torch.from_numpy(np.array(pic, np.float32, copy=False))
-    elif pic.mode == '1':
-        img = 255 * torch.from_numpy(np.array(pic, np.uint8, copy=False))
-    else:
-        img = torch.ByteTensor(torch.ByteStorage.from_buffer(pic.tobytes()))
+    train = [0 for i in range(len(data))]
+    test = [0 for i in range(len(data))]
+    for pid in range(len(data)):
+        try:
+            N = data[pid].shape[0]
+        except:
+            set_trace()
+        indices = list(range(N))
+        np.random.shuffle(indices)
+        #m = 44 # ~70%
+        m = 55
+        train[pid] = data[pid][:m, :, :, :]
+        test[pid] = data[pid][m:, :, :, :]
+    return data, train, test
 
-    img = img.view(pic.size[1], pic.size[0], len(pic.getbands()))
-    # put it from HWC to CHW format
-    img = img.permute((2, 0, 1)).contiguous()
-    if isinstance(img, torch.ByteTensor):
-        return img.float()
-    else:
-        return img
+class YaleDataset(Dataset):
 
-class BlockIndexer():
+    def __init__(self, X, y, transform=None):
+        """
+        Args:
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        self.X = X
+        self.y = y
+        self.transform = transform
 
-    def __init__(self, block_size, num_blocks):
-        self.block_size = block_size
-        self.num_blocks = num_blocks
-        self.hierarchical = len(self.num_blocks) == 2
+    def __len__(self):
+        return len(self.y)
 
-    def _expand_block_idx(self, block_idx):
-        if self.hierarchical:
-            (i, j) = block_idx
-            assert i < self.num_blocks[0] and j < self.num_blocks[1]
-            start_idx = j*self.block_size*self.num_blocks[0] + i*self.block_size
-            end_idx = j*self.block_size*self.num_blocks[0] + (i + 1)*self.block_size
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            assert False
         else:
-            i = block_idx
-            assert i < self.num_blocks[0]
-            start_idx = i*self.block_size
-            end_idx = (i + 1)*self.block_size
-        return (start_idx, end_idx)
+            x = self.X[idx, :]
+            y = self.y[idx]
 
-    def get_block(self, x, block_idx):
-        start_idx, end_idx = self._expand_block_idx(block_idx)
-        if len(x.shape) == 2:
-            return x[:, start_idx:end_idx]
-        else:
-            return x[start_idx:end_idx]
-
-    def sanity_check(self, xs):
-        for x in xs:
-            assert x.shape[-1] == reduce(mul, self.num_blocks) * self.block_size
-
-    def delete_block(self, x, block_idx):
-        if self.hierarchical:
-            indices = list()
-            for j in range(self.num_blocks[1]):
-                start_idx, end_idx = self._expand_block_idx((block_idx, j))
-                indices.append(np.arange(start_idx, end_idx))
-            indices = np.concatenate(indices)
-        else:
-            start_idx, end_idx = self._expand_block_idx(block_idx)
-            indices = np.arange(start_idx, end_idx)
-        if len(x.shape) == 2:
-            x = np.delete(x, indices, 1)
-        else:
-            x = np.delete(x, indices)
-        return x
-
-    def set_block(self, x, block_idx, val):
-        start_idx, end_idx = self._expand_block_idx(block_idx)
-        if len(x.shape) == 2:
-            x[:, start_idx:end_idx] = val 
-        else:
-            x[start_idx:end_idx] = val
-        return x
+            if self.transform:
+                x = self.transform(x)
+            return x, y
 
 class ScatteringTransform(object):
 
@@ -128,78 +150,3 @@ class ScatteringTransform(object):
             embed_sample = embed_sample.reshape((-1, new_C, \
                     N1//2**self.J, N2//2**self.J))
         return embed_sample
-
-###### TAKEN FROM GITHUB: https://github.com/oscarknagg/adversarial/tree/master/adversarial
-def project(x: torch.Tensor, x_adv: torch.Tensor, norm: Union[str, int], eps: float) -> torch.Tensor:
-    """Projects x_adv into the l_norm ball around x
-    Assumes x and x_adv are 4D Tensors representing batches of images
-    Args:
-        x: Batch of natural images
-        x_adv: Batch of adversarial images
-        norm: Norm of ball around x
-        eps: Radius of ball
-    Returns:
-        x_adv: Adversarial examples projected to be at most eps
-            distance from x under a certain norm
-    """
-    if x.shape != x_adv.shape:
-        raise ValueError('Input Tensors must have the same shape')
-
-    if norm == 'inf':
-        # Workaround as PyTorch doesn't have elementwise clip
-        x_adv = torch.max(torch.min(x_adv, x + eps), x - eps)
-    else:
-        delta = x_adv - x
-
-        # Assume x and x_adv are batched tensors where the first dimension is
-        # a batch dimension
-        mask = delta.view(delta.shape[0], -1).norm(norm, dim=1) <= eps
-
-        scaling_factor = delta.view(delta.shape[0], -1).norm(norm, dim=1)
-        scaling_factor[mask] = eps
-
-        # .view() assumes batched images as a 4D Tensor
-        delta *= eps / scaling_factor.view(-1, 1, 1, 1)
-
-        x_adv = x + delta
-
-    return x_adv
-
-
-def random_perturbation(x: torch.Tensor, norm: Union[str, int], eps: float) -> torch.Tensor:
-    """Applies a random l_norm bounded perturbation to x
-    Assumes x is a 4D Tensor representing a batch of images
-    Args:
-        x: Batch of images
-        norm: Norm to measure size of perturbation
-        eps: Size of perturbation
-    Returns:
-        x_perturbed: Randomly perturbed version of x
-    """
-    perturbation = torch.normal(torch.zeros_like(x), torch.ones_like(x))
-    if norm == 'inf':
-        perturbation = torch.sign(perturbation) * eps
-    else:
-        perturbation = project(torch.zeros_like(x), perturbation, norm, eps)
-
-    return x + perturbation
-
-
-def generate_misclassified_sample(model: Module,
-                                  x: torch.Tensor,
-                                  y: torch.Tensor,
-                                  clamp: Tuple[float, float] = (0, 1)) -> torch.Tensor:
-    """Generates an arbitrary misclassified sample
-    Args:
-        model: Model that must misclassify
-        x: Batch of image data
-        y: Corresponding labels
-        clamp: Max and minimum values of elements in the samples i.e. (0, 1) for MNIST
-    Returns:
-        x_misclassified: A sample for the model that is not classified correctly
-    """
-    while True:
-        x_misclassified = torch.empty_like(x).uniform_(*clamp)
-
-        if model(x_misclassified).argmax(dim=1) != y:
-            return x_misclassified

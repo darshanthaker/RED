@@ -2,7 +2,7 @@ import numpy as np
 import copy
 
 from pdb import set_trace
-from utils import BlockIndexer
+from block_indexer import BlockIndexer
 
 class BlockSparseIRLSSolver(object):
 
