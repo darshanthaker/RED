@@ -1,5 +1,19 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import argparse
+import utils
+import sys
+import os
+import pickle
+import torch
+import torchvision
+import torch.nn as nn
+import copy
+import sbsc
+
+from pdb import set_trace
+from trainer import Trainer
+from irls import BlockSparseIRLSSolver
 
 def plot_heatmap():
     eps = scipy.io.loadmat('mats/linear_mm/err_joint_eps0.1.mat')['err_joint']
@@ -34,6 +48,8 @@ def eps_plot(trainer):
     result_map = {'l2': {'signal': [], 'att': [], 'test': [], 'backtest': [], 'baseline': []}, 
                   'linf': {'signal': [], 'att': [], 'test': [], 'backtest': [], 'baseline': []}}
 
+    ## MNIST
+    """
     result_map = {'linf': {'eps': [0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30], 
                            'signal': [94, 89, 85, 82, 73, 63, 56],
                            'att': [24, 50, 88, 93, 92, 91, 86],
@@ -52,6 +68,27 @@ def eps_plot(trainer):
                            'test': [98.99, 98.45, 95.68, 90.12, 79.63, 63.88, 41.97],
                            'backtest': [99, 99, 96, 93, 80, 62, 41],
                            'baseline': [92, 87, 84, 83, 81, 78, 75]}}
+    """
+
+    result_map = {'linf': {'eps': [0, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1], 
+                           'signal': [95, 94, 93, 92, 87, 86, 81],
+                           'att': [40, 77, 95, 98, 99, 99],
+                           'test': [97.53, 63.88, 16.05, 0.61, 0.61, 0],
+                           'backtest': [96, 66, 16, 0, 0, 0],
+                           'baseline': []},
+                  'l2': {'eps': [0.0, 0.75, 1.5, 2.5, 3.25, 4.0, 5.0], 
+                           'signal': [95, 92, 86, 79, 61, 49, 32],
+                           'att': [32, 20, 20, 29, 22, 24, 17],
+                           'test': [97.53, 4.01, 0.61, 0.61, 0.3, 0.3, 0],
+                           'backtest': [96, 4, 0, 0, 0, 0, 0],
+                           'baseline': []},
+                  'l1': {'eps': [0.0, 2.25, 4.5, 7.5, 9.75, 12, 15], 
+                           'signal': [95, 94, 93, 93, 91, 91, 87],
+                           'att': [4, 62, 88, 93, 95, 98, 87],
+                           'test': [97.53, 83.024, 50.30, 14.50, 1.85, 0.61],
+                           'backtest': [30, 82, 48, 16, 6, 3, 0],
+                           'baseline': []}}
+
 
     baseline_map = {'linf': {'name': ['M1', 'M2', 'Minf', 'MAX', 'AVG', 'MSD'],
                              'eps_t': [0.287, 0.3, 0.3, 0.3, 0.3, 0.282], 
@@ -102,15 +139,13 @@ def eps_plot(trainer):
         ax2 = ax1.twinx()
         dual_axes.append(ax2)
         ax1.plot(result_map[att]['eps'], result_map[att]['signal'], label='SBSC', marker='*', markersize=7)
-        ax2.plot(result_map[att]['eps'], result_map[att]['att'], label='AD', linestyle='--', marker='s', color='black', markerfacecolor='none')
+        ax2.plot(result_map[att]['eps'], result_map[att]['att'], label='SBSAD', linestyle='--', marker='s', color='black', markerfacecolor='none')
         ax1.plot(result_map[att]['eps'], result_map[att]['test'], label='No Defense', marker='*', markersize=7)
         ax1.plot(result_map[att]['eps'], result_map[att]['backtest'], label='SBSC+CNN', marker='*', markersize=7)
-        ax1.plot(result_map[att]['eps'], result_map[att]['baseline'], label='BSC', marker='*', markersize=7)
-        bm = baseline_map[att]
-        #plt.scatter(bm['eps'], bm['acc'], marker='o', color='black', s=7.5)
-        for (name, eps, acc) in zip(bm['name'], bm['eps'], bm['acc']):
-            ax1.scatter(eps, acc, label=name, marker='x')
-            #plt.annotate(name, (eps, acc+1), fontsize=8)
+        #ax1.plot(result_map[att]['eps'], result_map[att]['baseline'], label='BSC', marker='*', markersize=7)
+        #bm = baseline_map[att]
+        #for (name, eps, acc) in zip(bm['name'], bm['eps'], bm['acc']):
+        #    ax1.scatter(eps, acc, label=name, marker='x')
         #ax1.legend(prop={'size': 9})
         #ax2.legend(prop={'size': 9}, handlelength=3)
         ax1.grid()
@@ -122,25 +157,76 @@ def eps_plot(trainer):
     #fig.set_ylabel('Attack Detection Accuracy')
     axes[0].set_ylabel('Signal Classification Accuracy')
     dual_axes[-1].set_ylabel('Attack Detection Accuracy')
-    plt.savefig('all_mnist.png')
+    plt.savefig('all_yaleb.png')
         #ax1.cla()
         #ax2.cla()
         #fig.clf() 
         #plt.clf()
 
-def eps_grid():
-    lp = 1
-    for eps in [0.0, 1.5, 3.0, 5.0, 6.5, 8.0, 10.0]:
-    #for eps in [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30]:
-    #for eps in [0.0, 0.3, 0.6, 1.0, 1.3, 1.6, 2.0]:
+def eps_grid(args):
+    lp = np.infty
+    if args.dataset == 'yale':
+        if lp == 1:
+            epss = [0.0, 2.25, 4.5, 7.5, 9.75, 12.0, 15.0]
+        elif lp == 2:
+            epss = [0.0, 0.75, 1.5, 2.5, 3.25, 4.0, 5.0]
+        elif lp == np.infty:
+            epss = [0.0, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1]
+    elif args.dataset == 'mnist':
+        if lp == 1: 
+            epss = [0.0, 1.5, 3.0, 5.0, 6.5, 8.0, 10.0]
+        elif lp == 2: 
+            epss =[0.0, 0.3, 0.6, 1.0, 1.3, 1.6, 2.0]
+        elif lp == np.infty:
+            epss = [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30]
+    for eps in epss:
         print("-------------EPS = {}---------------".format(eps))
         np.random.seed(0)
-        trainer = Trainer(arch=ARCH, dataset=DATASET, bsz=128, embedding=EMBEDDING)
+        trainer = Trainer(args)
         #trainer.train(75, 0.05) 
-        trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(ARCH, DATASET)))
+        trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset)))
         test_acc = trainer.evaluate(test=True)
         print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
-        irls(trainer, TOOLCHAIN, lp, eps)
+        sbsc.sbsc(trainer, args, eps, lp)
+
+def sbsc_test(args):
+    np.random.seed(0)
+    trainer = Trainer(args, use_maini_cnn=False)
+    #trainer.train(75, 0.05) 
+    trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset)))
+    test_acc = trainer.evaluate(test=True)
+    print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
+
+    eps_map = utils.EPS[args.dataset]
+    eps = eps_map[args.test_lp]
+    test_lp = args.test_lp
+    sbsc.sbsc(trainer, args, eps, test_lp)
+    #sbsc.serialize_dictionaries(trainer, args)
+
+def sbsc_maini_test(args):
+    np.random.seed(0)
+    trainer = Trainer(args, use_maini_cnn=True)
+    #trainer.train(75, 0.05) 
+    model_name = 'vanilla'
+    device_id = 0
+    device = torch.device("cuda:{}".format(device_id) if torch.cuda.is_available() else "cpu")
+    torch.cuda.set_device(int(device_id))
+    model_address = "files/MNIST_Baseline_Models/{}.pt".format(model_name.upper())
+    trainer.net.load_state_dict(torch.load(model_address, map_location=device))
+    test_acc = trainer.evaluate(test=True)
+    print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
+
+    eps_map = utils.EPS[args.dataset]
+    eps = eps_map[args.test_lp]
+    test_lp = args.test_lp
+    sbsc.sbsc(trainer, args, eps, test_lp)
+    #serialize_dictionaries(trainer, args)
 
 
+if __name__=='__main__':
+    parser = argparse.ArgumentParser(description='Experiments')
+    parser = utils.get_parser(parser)
+    args = parser.parse_args()
 
+    sbsc_maini_test(args)
+    #sbsc_test(args)

@@ -1,9 +1,12 @@
 import numpy as np
 import re
 import torch
+import torch.nn as nn
 import math
 import argparse
+import os
 
+from PIL import Image
 from typing import Union, Tuple
 from torch.nn import Module
 from torch.utils.data import DataLoader, Dataset
@@ -17,9 +20,9 @@ EPS = {'mnist': {1: 10., \
        'cifar': {1: 12., \
         2: 0.5, \
         np.infty: 0.03},
-        'yale': {1: 15., \
-        2: 5.,
-        np.infty: 0.1}}
+        'yale': {1: 4.5, \
+        2: 0.75,
+        np.infty: 0.02}}
 STEP = {'mnist': {1: 0.8, \
         2: 0.1, \
         np.infty: 0.01}, \
@@ -38,7 +41,6 @@ def get_parser(parser):
     parser.add_argument('--lr', default=0.01, type=float, help='Learning rate for training network')
     parser.add_argument('--num_epochs', default=5, type=int, help='Number of epochs to train network')
     parser.add_argument('--bsz', default=128, type=int, help='Batch size')
-    parser.add_argument('--output_dir', default='', type=str, help='output directory')
     parser.add_argument('--arch', default='carlini_cnn', type=str, help='Network architecture')
     parser.add_argument('--pretrained_path', default="", type=str, help='Path to find pretrained model')
     parser.add_argument('--embedding', default=None, type=str, help='Embedding to use')
@@ -46,7 +48,7 @@ def get_parser(parser):
     parser.add_argument('--L', default=7, type=float, help='Scattering Transform L')
     parser.add_argument('--regularizer', default=4, type=int, help='Regularizer to use for IRLS')
     parser.add_argument('--toolchain', default=[1, 2, np.infty], nargs='+', type=float, help='Toolchain')
-    parser.add_argument('--test_lp', default=np.infty, type=float, help='Lp perturbation type to apply to test points')
+    parser.add_argument('--test_lp', default=2, type=float, help='Lp perturbation type to apply to test points')
     parser.add_argument('--lambda1', default=5, type=float, help='Lambda1 for IRLS')
     parser.add_argument('--lambda2', default=15, type=float, help='Lambda2 for IRLS')
     parser.add_argument('--del_threshold', default=0.2, type=float, help='Del threshold for IRLS')
@@ -97,6 +99,49 @@ def parse_yale_data(resize=True):
         train[pid] = data[pid][:m, :, :, :]
         test[pid] = data[pid][m:, :, :, :]
     return data, train, test
+
+def pgd_linf(model, X, y, epsilon=0.3, alpha=0.01, num_iter = 50, randomize = 0, restarts = 0, device = "cuda:1"):
+    """ Construct FGSM adversarial examples on the examples X"""
+    # ipdb.set_trace()
+   
+    max_delta = torch.zeros_like(X)
+    if randomize:
+        delta = torch.rand_like(X, requires_grad=True)
+        delta.data = (delta.data * 2.0 - 1.0) * epsilon
+    else:
+        delta = torch.zeros_like(X, requires_grad=True)    
+    for t in range(num_iter):
+        output = model(X+delta)
+        incorrect = output.max(1)[1] != y 
+        correct = (~incorrect).unsqueeze(1).unsqueeze(1).unsqueeze(1).float()
+        #Finding the correct examples so as to attack only them
+        loss = nn.CrossEntropyLoss()(model(X + delta), y)
+        loss.backward()
+        delta.data = (delta.data + alpha*correct*delta.grad.detach().sign()).clamp(-epsilon,epsilon)
+        delta.data = torch.min(torch.max(delta.detach(), -X), 1-X) # clip X+delta to [0,1]
+        delta.grad.zero_()
+    max_delta = delta.detach()
+    
+    for i in range (restarts):
+        delta = torch.rand_like(X, requires_grad=True)
+        delta.data = (delta.data * 2.0 - 1.0) * epsilon
+
+        for t in range(num_iter):
+            output = model(X+delta)
+            incorrect = output.max(1)[1] != y 
+            correct = (~incorrect).unsqueeze(1).unsqueeze(1).unsqueeze(1).float()
+            #Finding the correct examples so as to attack only them            
+            loss = nn.CrossEntropyLoss()(model(X + delta), y)
+            loss.backward()
+            delta.data = (delta.data + alpha*correct*delta.grad.detach().sign()).clamp(-epsilon,epsilon)
+            delta.data = torch.min(torch.max(delta.detach(), -X), 1-X) # clip X+delta to [0,1]
+            delta.grad.zero_()
+
+        output = model(X+delta)
+        incorrect = output.max(1)[1] != y
+        #Edit Max Delta only for successful attacks        
+        max_delta[incorrect] = delta.detach()[incorrect]
+    return max_delta
 
 class YaleDataset(Dataset):
 

@@ -8,6 +8,7 @@ import torchvision
 import torch.nn as nn
 import utils
 import copy
+import baselines
 
 from sklearn.preprocessing import normalize
 from neural_net import NN, CNN
@@ -18,7 +19,7 @@ from advertorch.attacks import SparseL1DescentAttack, L2PGDAttack, LinfPGDAttack
 
 class Trainer(object):
 
-    def __init__(self, args, arch='carlini_cnn', dataset='yale', bsz=128, embedding=None):
+    def __init__(self, args, use_maini_cnn=False):
         self.args = args
         self.arch = self.args.arch
         self.use_cnn = 'cnn' in self.arch
@@ -55,6 +56,8 @@ class Trainer(object):
                 num_classes=self.num_classes)
         else:
             self.net = NN(self.d, 256, self.num_classes, linear=False) 
+        if use_maini_cnn:
+            self.net = baselines.net()
         #self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
         if torch.cuda.is_available():
             self.net = self.net.cuda()
@@ -82,8 +85,8 @@ class Trainer(object):
             raw_train_X = np.vstack(raw_train_full)
             raw_test_X = np.vstack(raw_test_full)
 
-            self.train_dataset = YaleDataset(raw_train_X, self.train_y, transform=transform)
-            self.test_dataset = YaleDataset(raw_test_X, self.test_y, transform=transform)
+            self.train_dataset = utils.YaleDataset(raw_train_X, self.train_y, transform=transform)
+            self.test_dataset = utils.YaleDataset(raw_test_X, self.test_y, transform=transform)
         elif self.dataset == 'cifar':
             self.train_dataset = torchvision.datasets.CIFAR10('files/', train=True, \
                 download=True, transform=transform)
@@ -255,14 +258,24 @@ class Trainer(object):
             by = by.cuda()
             step_size = self.step_map[lp]
 
-            self.net.eval()
-            self.net.zero_grad()
+            #self.net.eval()
+            #self.net.zero_grad()
 
             if lp == np.infty: 
                 adversary = LinfPGDAttack(
                     self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
                     nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
                     targeted=False)
+                """
+                delta = utils.pgd_linf(self.net, bx, by, restarts=10, num_iter=100)
+                if only_delta:
+                    out = delta
+                else:
+                    out = bx + delta
+                out = out.cpu().detach().numpy()
+                set_trace()
+                return out
+                """
             elif lp == 2:
                 adversary = L2PGDAttack(
                     self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,

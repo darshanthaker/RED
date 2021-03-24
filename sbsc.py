@@ -15,7 +15,6 @@ import utils
 import copy
 import argparse
 
-from PIL import Image
 from cvxpy.atoms.norm import norm
 from cvxpy.atoms.affine.hstack import hstack
 from neural_net import NN, CNN
@@ -25,25 +24,10 @@ from scipy.sparse.linalg import svds
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
 from advertorch.attacks import SparseL1DescentAttack, L2PGDAttack, LinfPGDAttack
-from foolbox.attacks import FGSM, L2PGD, L1PGD
-from foolbox.criteria import Misclassification
-from foolbox.utils import samples
-from cleverhans.torch.attacks.fast_gradient_method import fast_gradient_method
-from cleverhans.torch.attacks.projected_gradient_descent import projected_gradient_descent
+from baselines import evaluate_baseline 
 from kymatio.torch import Scattering2D
 from trainer import Trainer
 from irls import BlockSparseIRLSSolver
-
-"""
-DATASET = 'mnist'
-#DATASET = 'yale'
-ARCH = 'carlini_cnn'
-#ARCH = 'dense'
-EMBEDDING = None
-ALG = 4
-LP = 1
-TOOLCHAIN = [1, 2, np.infty]
-"""
 
 def serialize_dictionaries(trainer, args):
     toolchain = args.toolchain
@@ -75,7 +59,7 @@ def serialize_dictionaries(trainer, args):
         all_attacks.append(test_adv)
 
         acc = trainer.evaluate(given_examples=(test_adv, trainer.test_y[test_idx]))
-        print("[L{}] Adversarial accuracy: {}".format(lp, acc))
+        print("[L{}, eps = {}] Adversarial accuracy: {}".format(lp, eps_map[lp], acc))
         if lp == np.infty:
             scipy.io.savemat('mats/{}_ce/linf_eps{}.mat'.format(dst, eps_map[lp]), {'data': test_adv})
         elif lp == 2:
@@ -110,7 +94,7 @@ def baseline(trainer, test_adv, test_y):
         result = prob.solve(verbose=False)
         opt = np.array(c.value)
 
-        l = SIZE_MAP[trainer.dataset]
+        l = utils.SIZE_MAP[trainer.dataset]
         res = list()
         for pid in range(trainer.num_classes):
             res.append(np.linalg.norm(x_adv - Ds[:, l*pid:l*(pid + 1)]@opt[l*pid:l*(pid + 1)]))
@@ -119,19 +103,19 @@ def baseline(trainer, test_adv, test_y):
     acc = sum(pred == test_y)
     return acc
 
-def irls(trainer, args):
-    test_lp = args.test_lp
+def sbsc(trainer, args, eps, test_lp):
     toolchain = args.toolchain
     eps_map = utils.EPS[args.dataset]
-    eps = eps_map[args.test_lp]
+    #eps = eps_map[args.test_lp]
 
-    print("L{} attacks, eps = {}".format(test_lp, eps))
     attack_dicts = list()
     for attack in toolchain:
         attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack))
 
     np.random.seed(0)
-    test_idx = np.random.choice(list(range(trainer.N_test)), 324)
+    test_idx = list(range(100))
+    #test_idx = np.random.choice(list(range(trainer.N_test)), 324)
+    #test_idx = list(range(trainer.N_test))
     test_y = trainer.test_y[test_idx]
     Da = np.hstack(attack_dicts)
     Ds = trainer.compute_train_dictionary(trainer.train_full)
@@ -140,10 +124,17 @@ def irls(trainer, args):
     num_attacks = len(toolchain)
     
     test_adv = trainer.test_lp_attack(test_lp, test_idx, eps, realizable=False)
+    set_trace()
     #bx = trainer.test_X[test_idx, :, :]
     #set_trace()
-    acc = trainer.evaluate(given_examples=(test_adv, test_y))
-    print("[L{}] Adversarial accuracy: {}%".format(test_lp, acc))
+    #acc = trainer.evaluate(given_examples=(test_adv, test_y))
+    #print("[L{}, eps={}] Adversarial accuracy: {}%".format(test_lp, eps, acc))
+
+    models = ['L1', 'L2', 'Linf', 'Max', 'Avg', 'Msd', 'Vanilla']
+    for model in models:
+        acc = evaluate_baseline(model, (test_adv[:, :], test_y[:]))
+        print("{}: Defense Accuracy: {}%".format(model, acc))
+    set_trace()
     #bacc = baseline(trainer, test_adv[:100, :], test_y[:100])
     #print("Baseline accuracy: {}%".format(bacc))
     #return
@@ -177,9 +168,12 @@ def irls(trainer, args):
         err_attack = np.array(err_attack)
         j_star = np.argmin(err_attack)
         attack_preds.append(j_star)
-        Da_blk = solver.hier_bi.get_block(Da_est, (i_star, j_star)) 
-        ca_blk = solver.hier_bi.get_block(ca_est, (i_star, j_star)) 
-        denoised.append(x - Da_blk@ca_blk)
+        #Da_blk = solver.hier_bi.get_block(Da_est, (i_star, j_star)) 
+        #ca_blk = solver.hier_bi.get_block(ca_est, (i_star, j_star)) 
+        Ds_blk = solver.sig_bi.get_block(Ds_est, i_star)
+        cs_blk = solver.sig_bi.get_block(cs_est, i_star)
+        denoised.append(Ds_blk@cs_blk)
+        #denoised.append(x - Da_blk@ca_blk)
     class_preds = np.array(class_preds)
     attack_preds = np.array(attack_preds)
     denoised = np.array(denoised)
@@ -188,23 +182,18 @@ def irls(trainer, args):
     if args.dataset == 'mnist':
         denoised = denoised.reshape((100, 1, 28, 28))
     denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:100]))
+
     print("Signal classification accuracy: {}%".format(signal_acc))
     print("Attack detection accuracy: {}%".format(attack_acc))
     print("Denoised accuracy: {}%".format(denoised_acc))
-
-def main(args):
-    np.random.seed(0)
-    trainer = Trainer(args)
-    #trainer.train(75, 0.05) 
-    trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset)))
-    test_acc = trainer.evaluate(test=True)
-    print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
-    irls(trainer, args)
-    #serialize_dictionaries(trainer, TOOLCHAIN)
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description='SBSC')
     parser = utils.get_parser(parser)
     args = parser.parse_args()
 
-    main(args)
+    main(args) 
+
+## YaleB
+## LAMBDA1: 0.2
+## LAMBDA2: 0.1
