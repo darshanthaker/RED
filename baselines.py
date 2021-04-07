@@ -47,7 +47,6 @@ def evaluate_baseline(model_name, given_examples):
             output = model.forward(bx.float())
             pred = output.data.argmax(1)
             num_correct += pred.eq(by.data.view_as(pred)).sum().item()
-        set_trace()
         acc = num_correct / len(by) * 100.
         return acc
 

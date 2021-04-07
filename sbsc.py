@@ -103,6 +103,42 @@ def baseline(trainer, test_adv, test_y):
     acc = sum(pred == test_y)
     return acc
 
+def epoch_adversarial(loader, lr_schedule, model, epoch_i, attack, criterion = nn.CrossEntropyLoss(), 
+                        opt=None, device = "cuda:1", stop = False, stats = False, **kwargs):
+    """Adversarial training/evaluation epoch over the dataset"""
+    train_loss = 0
+    train_acc = 0
+    train_n = 0
+
+    for i, batch in enumerate(loader):
+        X,y = batch[0].to(device), batch[1].to(device)
+        # if attack == pgd_all_old:
+        #     delta = attack(model, X, y, device = device, **kwargs)
+        #     delta = delta[0]
+        # else:
+        if stats:
+            delta = attack(model, X, y, device = device, batchid=i, epoch_i = epoch_i , **kwargs)
+        else:
+            delta = attack(model, X, y, device = device, **kwargs)
+        adv = X + delta
+
+        yp = model(X+delta)
+        loss = nn.CrossEntropyLoss()(yp,y)
+        if opt:
+            lr = lr_schedule(epoch_i + (i+1)/len(loader))
+            opt.param_groups[0].update(lr=lr)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+
+        train_loss += loss.item()*y.size(0)
+        train_acc += (yp.max(1)[1] == y).sum().item()
+        train_n += y.size(0)
+        if stop:
+            break
+        
+    return train_loss / train_n, train_acc / train_n, adv
+
 def sbsc(trainer, args, eps, test_lp):
     toolchain = args.toolchain
     eps_map = utils.EPS[args.dataset]
@@ -113,9 +149,10 @@ def sbsc(trainer, args, eps, test_lp):
         attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack))
 
     np.random.seed(0)
-    test_idx = list(range(100))
-    #test_idx = np.random.choice(list(range(trainer.N_test)), 324)
+    #test_idx = list(range(100))
+    test_idx = np.random.choice(list(range(trainer.N_test)), 100)
     #test_idx = list(range(trainer.N_test))
+    test_x = trainer.test_X[test_idx, :, :]
     test_y = trainer.test_y[test_idx]
     Da = np.hstack(attack_dicts)
     Ds = trainer.compute_train_dictionary(trainer.train_full)
@@ -123,18 +160,38 @@ def sbsc(trainer, args, eps, test_lp):
     sz = utils.SIZE_MAP[dst]
     num_attacks = len(toolchain)
     
-    test_adv = trainer.test_lp_attack(test_lp, test_idx, eps, realizable=False)
-    set_trace()
+    test_adv = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False)
+
+    ####### MAINI CODE
+    #trainer.load_model('Msd')
+    #test_loader = DataLoader(trainer.test_dataset, batch_size = 100, shuffle=False)
+    #device_id = 0
+    #device = torch.device("cuda:{}".format(device_id) if torch.cuda.is_available() else "cpu")
+    #torch.cuda.set_device(int(device_id))
+    #total_loss, maini_acc, maini_adv = epoch_adversarial(test_loader, None, trainer.net, 0, utils.pgd_linf, device = device, stop = True, restarts = 10, num_iter = 100, epsilon=eps)
+
+    
+    #maini = next(iter(test_loader))
+    #maini_x = maini[0].cuda()
+    #maini_y = maini[1].cuda()
+    #test_adv = trainer.test_lp_attack(test_lp, maini_x, maini_y, eps, realizable=False)
+    #delta = utils.pgd_linf(trainer.net, maini_x, maini_y, restarts=10, num_iter=100, epsilon=eps)
+    #red_adv =  trainer._lp_attack(test_lp, eps, maini_x, maini_y)
+    #maini_adv = maini_adv.cpu().detach().numpy()
+    #maini_y = maini_y.cpu().detach().numpy()
+    ########
     #bx = trainer.test_X[test_idx, :, :]
     #set_trace()
     #acc = trainer.evaluate(given_examples=(test_adv, test_y))
     #print("[L{}, eps={}] Adversarial accuracy: {}%".format(test_lp, eps, acc))
 
-    models = ['L1', 'L2', 'Linf', 'Max', 'Avg', 'Msd', 'Vanilla']
-    for model in models:
-        acc = evaluate_baseline(model, (test_adv[:, :], test_y[:]))
-        print("{}: Defense Accuracy: {}%".format(model, acc))
-    set_trace()
+    #models = ['L1', 'L2', 'Linf', 'Max', 'Avg', 'Msd', 'Vanilla']
+    #for model in models:
+    #    acc = evaluate_baseline(model, (test_adv, maini_y))
+    #    maini_acc = evaluate_baseline(model, (maini_adv, maini_y))
+    #    print("{}: Defense Accuracy: {}%".format(model, acc))
+    #    print("{}: Maini Defense Accuracy: {}%".format(model, maini_acc))
+    #set_trace()
     #bacc = baseline(trainer, test_adv[:100, :], test_y[:100])
     #print("Baseline accuracy: {}%".format(bacc))
     #return

@@ -58,12 +58,23 @@ class Trainer(object):
             self.net = NN(self.d, 256, self.num_classes, linear=False) 
         if use_maini_cnn:
             self.net = baselines.net()
+            self.maini_attack = True
+        else:
+            self.maini_attack = False
         #self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
         if torch.cuda.is_available():
             self.net = self.net.cuda()
         self.loss_fn = nn.CrossEntropyLoss()
         #self.loss_fn = nn.MultiMarginLoss()
         self.train_loader, self.test_loader = self.preprocess_data()
+
+    def load_model(self, model_name):
+        device_id = 0
+        device = torch.device("cuda:{}".format(device_id) if torch.cuda.is_available() else "cpu")
+        torch.cuda.set_device(int(device_id))
+        model_address = "files/MNIST_Baseline_Models/{}.pt".format(model_name.upper())
+        self.net.load_state_dict(torch.load(model_address, map_location=device))
+        print("Loaded model {}".format(model_name))
 
     # Parse data and normalize image to [0, 1]
     def preprocess_data(self):
@@ -251,31 +262,31 @@ class Trainer(object):
                 return (bx - bx).detach().numpy()
             else:
                 return bx.detach().numpy()
-        d = bx.flatten(1).shape[1]
-
+        try:
+            d = bx.flatten(1).shape[1]
+        except:
+            set_trace()
         if torch.cuda.is_available():
             bx = bx.cuda()
             by = by.cuda()
             step_size = self.step_map[lp]
 
-            #self.net.eval()
-            #self.net.zero_grad()
+            self.net.eval()
+            self.net.zero_grad()
 
             if lp == np.infty: 
                 adversary = LinfPGDAttack(
                     self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
                     nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
                     targeted=False)
-                """
-                delta = utils.pgd_linf(self.net, bx, by, restarts=10, num_iter=100)
-                if only_delta:
-                    out = delta
-                else:
-                    out = bx + delta
-                out = out.cpu().detach().numpy()
-                set_trace()
-                return out
-                """
+                if self.maini_attack:
+                    delta = utils.pgd_linf(self.net, bx, by, restarts=10, num_iter=100, epsilon=eps)
+                    if only_delta:
+                        out = delta
+                    else:
+                        out = bx + delta
+                    out = out.cpu().detach().numpy()
+                    return out
             elif lp == 2:
                 adversary = L2PGDAttack(
                     self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
@@ -292,9 +303,7 @@ class Trainer(object):
             out = out.cpu().detach().numpy()
             return out
 
-    def test_lp_attack(self, lp, batch_idx, eps, realizable=False):
-        bx = self.test_X[batch_idx, :, :]
-        by = self.test_y[batch_idx]
+    def test_lp_attack(self, lp, bx, by, eps, realizable=False):
         bx = torch.from_numpy(bx)
         by = torch.from_numpy(by)
 

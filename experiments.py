@@ -41,7 +41,7 @@ def plot_heatmap():
     #plt.title("$\| x_{adv} - D_s[i]c_s[i] - D_a[j]c_a[j]\|_2$")
     #plt.savefig('plots/coarse_heatmap_success_linf.png')
 
-def eps_plot(trainer):
+def eps_plot():
     epss = [0.05, 0.07, 0.10, 0.15, 0.20, 0.25, 0.30]
     atts = ['l2', 'l1', 'linf']
     att_map = {'l2': 2, 'linf': np.inf}
@@ -49,27 +49,26 @@ def eps_plot(trainer):
                   'linf': {'signal': [], 'att': [], 'test': [], 'backtest': [], 'baseline': []}}
 
     ## MNIST
-    """
     result_map = {'linf': {'eps': [0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30], 
                            'signal': [94, 89, 85, 82, 73, 63, 56],
                            'att': [24, 50, 88, 93, 92, 91, 86],
                            'test': [98.99, 93.21, 62.96, 22.53, 5.55, 2.5, 2.5],
-                           'backtest': [99, 96, 65, 31, 6, 2.5, 3],
+                           'backtest': [94, 89, 85, 81, 72, 59, 53],
                            'baseline': [92, 84, 82, 73, 72, 66, 54]},
                   'l2': {'eps': [0, 0.3, 0.6, 1, 1.3, 1.6, 2], 
-                           'signal': [94, 93, 89, 86, 85, 82, 80],
+                           'signal': [94, 93, 89, 86, 87, 85, 81],
                            'att': [34, 35, 39, 43, 45, 42, 41],
                            'test': [98.99, 97.53, 92.90, 74.38, 55.86, 50, 44.75],
-                           'backtest': [99, 99, 95, 73, 59, 52, 47],
+                           'backtest': [94, 93, 89, 86, 87, 85, 81],
                            'baseline': [92, 89, 85, 84, 81, 79, 76]},
                   'l1': {'eps': [0, 1.5, 3, 5, 6.5, 8, 10], 
                            'signal': [94, 93, 90, 85, 85, 85, 82],
                            'att': [44, 44, 47, 52, 55, 59, 66],
                            'test': [98.99, 98.45, 95.68, 90.12, 79.63, 63.88, 41.97],
-                           'backtest': [99, 99, 96, 93, 80, 62, 41],
+                           'backtest': [],
                            'baseline': [92, 87, 84, 83, 81, 78, 75]}}
-    """
 
+    """
     result_map = {'linf': {'eps': [0, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1], 
                            'signal': [95, 94, 93, 92, 87, 86, 81],
                            'att': [40, 77, 95, 98, 99, 99],
@@ -88,6 +87,7 @@ def eps_plot(trainer):
                            'test': [97.53, 83.024, 50.30, 14.50, 1.85, 0.61],
                            'backtest': [30, 82, 48, 16, 6, 3, 0],
                            'baseline': []}}
+    """
 
 
     baseline_map = {'linf': {'name': ['M1', 'M2', 'Minf', 'MAX', 'AVG', 'MSD'],
@@ -134,15 +134,17 @@ def eps_plot(trainer):
 
     fig, axes = plt.subplots(1, 3, figsize=(6.4*3, 4.8))
     dual_axes = list()
-    for (ax1, att) in zip(axes, ['l1', 'l2', 'linf']):
+    attacks = ['linf']
+    #attacks = ['l1', 'l2', 'linf']
+    for (ax1, att) in zip(axes, attacks):
         #fig, ax1 = plt.subplots()
         ax2 = ax1.twinx()
         dual_axes.append(ax2)
         ax1.plot(result_map[att]['eps'], result_map[att]['signal'], label='SBSC', marker='*', markersize=7)
-        ax2.plot(result_map[att]['eps'], result_map[att]['att'], label='SBSAD', linestyle='--', marker='s', color='black', markerfacecolor='none')
+        #ax2.plot(result_map[att]['eps'], result_map[att]['att'], label='SBSAD', linestyle='--', marker='s', color='black', markerfacecolor='none')
         ax1.plot(result_map[att]['eps'], result_map[att]['test'], label='No Defense', marker='*', markersize=7)
         ax1.plot(result_map[att]['eps'], result_map[att]['backtest'], label='SBSC+CNN', marker='*', markersize=7)
-        #ax1.plot(result_map[att]['eps'], result_map[att]['baseline'], label='BSC', marker='*', markersize=7)
+        ax1.plot(result_map[att]['eps'], result_map[att]['baseline'], label='BSC', marker='*', markersize=7)
         #bm = baseline_map[att]
         #for (name, eps, acc) in zip(bm['name'], bm['eps'], bm['acc']):
         #    ax1.scatter(eps, acc, label=name, marker='x')
@@ -150,21 +152,21 @@ def eps_plot(trainer):
         #ax2.legend(prop={'size': 9}, handlelength=3)
         ax1.grid()
         ax1.set_yticks(np.arange(0, 101, 10))
-        ax2.set_yticks(np.arange(0, 101, 10))
+        #ax2.set_yticks(np.arange(0, 101, 10))
         ax1.set_xlabel('{} Epsilon'.format(att))
     #fig.set_xlabel('Epsilon of Perturbation')
     #fig.set_ylabel('Signal Classification Accuracy')
     #fig.set_ylabel('Attack Detection Accuracy')
     axes[0].set_ylabel('Signal Classification Accuracy')
-    dual_axes[-1].set_ylabel('Attack Detection Accuracy')
-    plt.savefig('all_yaleb.png')
+    #dual_axes[-1].set_ylabel('Attack Detection Accuracy')
+    plt.savefig('signal_mnist_sitevisit.png')
         #ax1.cla()
         #ax2.cla()
         #fig.clf() 
         #plt.clf()
 
 def eps_grid(args):
-    lp = np.infty
+    lp = args.test_lp
     if args.dataset == 'yale':
         if lp == 1:
             epss = [0.0, 2.25, 4.5, 7.5, 9.75, 12.0, 15.0]
@@ -200,6 +202,7 @@ def sbsc_test(args):
     eps_map = utils.EPS[args.dataset]
     eps = eps_map[args.test_lp]
     test_lp = args.test_lp
+    print("-------------EPS = {}---------------".format(eps))
     sbsc.sbsc(trainer, args, eps, test_lp)
     #sbsc.serialize_dictionaries(trainer, args)
 
@@ -220,7 +223,6 @@ def sbsc_maini_test(args):
     eps = eps_map[args.test_lp]
     test_lp = args.test_lp
     sbsc.sbsc(trainer, args, eps, test_lp)
-    #serialize_dictionaries(trainer, args)
 
 
 if __name__=='__main__':
@@ -228,5 +230,7 @@ if __name__=='__main__':
     parser = utils.get_parser(parser)
     args = parser.parse_args()
 
-    sbsc_maini_test(args)
+    #sbsc_maini_test(args)
     #sbsc_test(args)
+    #eps_grid(args)
+    eps_plot()
