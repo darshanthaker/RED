@@ -231,6 +231,6 @@ if __name__=='__main__':
     args = parser.parse_args()
 
     #sbsc_maini_test(args)
-    #sbsc_test(args)
+    sbsc_test(args)
     #eps_grid(args)
-    eps_plot()
+    #eps_plot()

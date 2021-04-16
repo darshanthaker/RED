@@ -154,7 +154,7 @@ def sbsc(trainer, args, eps, test_lp):
     #test_idx = list(range(trainer.N_test))
     test_x = trainer.test_X[test_idx, :, :]
     test_y = trainer.test_y[test_idx]
-    Da = np.hstack(attack_dicts)
+    raw_Da = np.hstack(attack_dicts)
     Ds = trainer.compute_train_dictionary(trainer.train_full)
     dst = trainer.dataset
     sz = utils.SIZE_MAP[dst]
@@ -196,16 +196,29 @@ def sbsc(trainer, args, eps, test_lp):
     #print("Baseline accuracy: {}%".format(bacc))
     #return
 
-    solver = BlockSparseIRLSSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
-            lambda1=args.lambda1, lambda2=args.lambda2, del_threshold=args.del_threshold)
     class_preds = list()
     attack_preds = list()
     denoised = list()
-    for t in range(100):
+    num_examples = 5
+    for t in range(num_examples):
         if t % 5 == 0:
             print(t)
-        x = test_adv[t, :]
-        x = x.reshape(-1)
+        raw_x = test_adv[t, :]
+        if args.embedding == 'scattering':
+            raw_x = torch.from_numpy(raw_x).unsqueeze(0)
+            if torch.cuda.is_available():
+                raw_x = raw_x.cuda()
+            grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, raw_x)
+            grad = grad.reshape(64*7*7, 28*28)
+            Da = grad.cpu() @ raw_Da
+            Da = Da.numpy()
+            x = trainer.scattering(raw_x).cpu().detach().numpy().reshape(-1)
+        else:
+            Da = raw_Da
+            x = raw_x.reshape(-1)
+        set_trace()
+        solver = BlockSparseIRLSSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
+                lambda1=args.lambda1, lambda2=args.lambda2, del_threshold=args.del_threshold)
         cs_est, ca_est, Ds_est, Da_est, err_cs, ws, wa, active_classes = solver.solve(x, alg=args.regularizer)
 
         err_class = list()
@@ -233,16 +246,17 @@ def sbsc(trainer, args, eps, test_lp):
         #denoised.append(x - Da_blk@ca_blk)
     class_preds = np.array(class_preds)
     attack_preds = np.array(attack_preds)
+    print("Class preds: {}. Ground Truth: {}".format(class_preds, test_y[:num_examples]))
     denoised = np.array(denoised)
-    signal_acc = np.sum(class_preds == test_y[:100])
+    signal_acc = np.sum(class_preds == test_y[:num_examples])
     attack_acc = np.sum(attack_preds == toolchain.index(test_lp))
-    if args.dataset == 'mnist':
-        denoised = denoised.reshape((100, 1, 28, 28))
-    denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:100]))
+    #if args.dataset == 'mnist':
+    #    denoised = denoised.reshape((num_examples, 1, 28, 28))
+    #denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:100]))
 
     print("Signal classification accuracy: {}%".format(signal_acc))
     print("Attack detection accuracy: {}%".format(attack_acc))
-    print("Denoised accuracy: {}%".format(denoised_acc))
+    #print("Denoised accuracy: {}%".format(denoised_acc))
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description='SBSC')

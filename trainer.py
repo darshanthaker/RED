@@ -38,18 +38,18 @@ class Trainer(object):
             self.input_shape = (32, 32)
             self.d = 32*32*3
             self.num_classes = 10
-            if self.embedding is None:
-                self.in_channels = 3
-            else:
-                self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
+            #if self.embedding is None:
+            self.in_channels = 3
+            #else:
+            #    self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
         elif self.dataset == 'mnist':
             self.input_shape= (28, 28)
             self.d = 28*28
             self.num_classes = 10
-            if self.embedding is None:
-                self.in_channels = 1
-            else:
-                self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
+            #if self.embedding is None:
+            self.in_channels = 1
+            #else:
+            #    self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
         if self.use_cnn:
             d_arch = '{}_{}'.format(self.arch, self.dataset)
             self.net = CNN(arch=d_arch, embedding=self.embedding, in_channels=self.in_channels,
@@ -61,7 +61,7 @@ class Trainer(object):
             self.maini_attack = True
         else:
             self.maini_attack = False
-        #self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
+        self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
         if torch.cuda.is_available():
             self.net = self.net.cuda()
         self.loss_fn = nn.CrossEntropyLoss()
@@ -78,13 +78,8 @@ class Trainer(object):
 
     # Parse data and normalize image to [0, 1]
     def preprocess_data(self):
-        if self.embedding is None: 
-            transform = transforms.Compose(
-                    [transforms.ToTensor()])
-        elif self.embedding == 'scattering':
-            transform = transforms.Compose(
-                    [transforms.ToTensor(),
-                     self.scattering])
+        transform = transforms.Compose(
+                [transforms.ToTensor()])
 
         if self.dataset == 'yale':
             data, raw_train_full, raw_test_full = utils.parse_yale_data()
@@ -217,7 +212,6 @@ class Trainer(object):
                     if torch.cuda.is_available():
                         x = x.cuda()
                     embed_x = self.scattering(x).cpu().detach().numpy()
-                    set_trace()
                     dictionary.append(embed_x.reshape(-1))
                        
         dictionary = np.array(dictionary).T

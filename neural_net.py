@@ -32,10 +32,7 @@ class CNN(nn.Module):
         super().__init__()
         if arch == 'carlini_cnn_mnist':
             cfg = [32, 32, 'M', 64, 64, 'M']
-            if embedding is None:
-                output_size = 64*4*4
-            else:
-                output_size = 64
+            output_size = 64*4*4
         elif arch == 'carlini_cnn_cifar':
             cfg = [64, 64, 'M', 128, 128, 'M']
             output_size = 3200
