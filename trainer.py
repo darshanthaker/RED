@@ -15,7 +15,7 @@ from neural_net import NN, CNN
 from pdb import set_trace
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
-from advertorch.attacks import SparseL1DescentAttack, L2PGDAttack, LinfPGDAttack
+from advertorch.attacks import SparseL1DescentAttack, L2PGDAttack, LinfPGDAttack, CarliniWagnerL2Attack
 
 class Trainer(object):
 
@@ -220,7 +220,7 @@ class Trainer(object):
         else:
             return dictionary
 
-    def compute_lp_dictionary(self, eps, lp, block=False):
+    def compute_lp_dictionary(self, eps, lp, block=False, net=None, lp_variant=None):
         idx = list(range(self.N_train))
         bsz = self.N_train
         dictionary = list()
@@ -235,10 +235,18 @@ class Trainer(object):
 
         step = 2000
         dictionary = list()
+        if net is not None:
+            print("USING SOME CNN")
+            d_arch = '{}_{}'.format(self.arch, self.dataset)
+            net = CNN(arch=d_arch, embedding=self.embedding, in_channels=self.in_channels,
+                num_classes=self.num_classes)
+            if torch.cuda.is_available():
+                net = net.cuda()
+            net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(self.arch, self.dataset)))
         for i in range(0, bx.shape[0], step):
             batch_x = bx[i:i+step]
             batch_y = by[i:i+step]
-            out = self._lp_attack(lp, eps, batch_x, batch_y, only_delta=True)
+            out = self._lp_attack(lp, eps, batch_x, batch_y, only_delta=True, net=net, lp_variant=lp_variant)
             out = out.reshape((out.shape[0], -1))
             dictionary.append(out)
         dictionary = np.concatenate(dictionary)
@@ -248,56 +256,78 @@ class Trainer(object):
             blocks[label] = dictionary[torch.nonzero(by == label).squeeze()]
         if block:
             return blocks
-        return normalize(dictionary.T, axis=0)
+        try:
+            return normalize(dictionary.T, axis=0)
+        except:
+            set_trace()
 
-    def _lp_attack(self, lp, eps, bx, by, only_delta=False):
+    def _lp_attack(self, lp, eps, bx, by, only_delta=False, net=None, lp_variant=None):
         if eps == 0:
             if only_delta:
                 return (bx - bx).detach().numpy()
             else:
                 return bx.detach().numpy()
-        try:
-            d = bx.flatten(1).shape[1]
-        except:
-            set_trace()
+        d = bx.flatten(1).shape[1]
         if torch.cuda.is_available():
             bx = bx.cuda()
             by = by.cuda()
             step_size = self.step_map[lp]
 
-            self.net.eval()
-            self.net.zero_grad()
+            if net is None:
+                net = self.net
+            net.eval()
+            net.zero_grad()
 
             if lp == np.infty: 
                 adversary = LinfPGDAttack(
-                    self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
+                    net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
                     nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
                     targeted=False)
                 if self.maini_attack:
-                    delta = utils.pgd_linf(self.net, bx, by, restarts=10, num_iter=100, epsilon=eps)
+                    delta = utils.pgd_linf(net, bx, by, restarts=10, num_iter=100, epsilon=eps)
                     if only_delta:
                         out = delta
                     else:
                         out = bx + delta
                     out = out.cpu().detach().numpy()
                     return out
-            elif lp == 2:
+            elif lp == 2 and lp_variant is None:
                 adversary = L2PGDAttack(
-                    self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
+                    net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
                     nb_iter=200, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
                     targeted=False)
-            elif lp == 1: 
+                if self.maini_attack:
+                    delta = utils.pgd_l2(net, bx, by, restarts=10, num_iter=200, epsilon=eps)
+                    if only_delta:
+                        out = delta
+                    else:
+                        out = bx + delta
+                    out = out.cpu().detach().numpy()
+                    return out
+            elif lp == 1:
                 adversary = SparseL1DescentAttack(
-                    self.net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
-                    nb_iter=200, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
+                    net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
+                    nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
                     targeted=False)
+                if self.maini_attack:
+                    delta = utils.pgd_l1_topk(net, bx, by, restarts=10, num_iter=100, epsilon=eps)
+                    if only_delta:
+                        out = delta
+                    else:
+                        out = bx + delta
+                    out = out.cpu().detach().numpy()
+                    return out
+            elif lp == 2 and lp_variant == 'cw':
+                adversary = CarliniWagnerL2Attack(
+                    net, num_classes=self.num_classes, learning_rate=step_size, \
+                    max_iterations=100)
             out = adversary.perturb(bx, by)
             if only_delta:
                 out = out - bx
             out = out.cpu().detach().numpy()
             return out
 
-    def test_lp_attack(self, lp, bx, by, eps, realizable=False):
+    def test_lp_attack(self, lp, bx, by, eps, realizable=False, lp_variant=None):
         bx = torch.from_numpy(bx)
         by = torch.from_numpy(by)
 
@@ -314,6 +344,7 @@ class Trainer(object):
             perturbation = perturb[by, :]
             bx = bx.reshape((bx.shape[0], -1)).numpy()
             adv = bx + perturbation
+            adv = adv.reshape((adv.shape[0], 1, 28, 28))
             return adv
         else:
             bsz, channels, r, c = bx.shape[0], bx.shape[1], bx.shape[2], bx.shape[3]
@@ -321,7 +352,7 @@ class Trainer(object):
                 bx = bx.flatten(1)
             d = bx.shape[1]
 
-            out = self._lp_attack(lp, eps, bx, by)
+            out = self._lp_attack(lp, eps, bx, by, lp_variant=lp_variant)
         
             if not self.use_cnn:
                 out = out.reshape((bsz, channels, r, c))

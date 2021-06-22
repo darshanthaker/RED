@@ -202,27 +202,28 @@ def sbsc_test(args):
     eps_map = utils.EPS[args.dataset]
     eps = eps_map[args.test_lp]
     test_lp = args.test_lp
+    lp_variant = args.lp_variant
     print("-------------EPS = {}---------------".format(eps))
-    sbsc.sbsc(trainer, args, eps, test_lp)
+    sbsc.sbsc(trainer, args, eps, test_lp, lp_variant)
     #sbsc.serialize_dictionaries(trainer, args)
 
 def sbsc_maini_test(args):
     np.random.seed(0)
     trainer = Trainer(args, use_maini_cnn=True)
     #trainer.train(75, 0.05) 
-    model_name = 'vanilla'
+    model_name = 'msd'
     device_id = 0
     device = torch.device("cuda:{}".format(device_id) if torch.cuda.is_available() else "cpu")
     torch.cuda.set_device(int(device_id))
     model_address = "files/MNIST_Baseline_Models/{}.pt".format(model_name.upper())
     trainer.net.load_state_dict(torch.load(model_address, map_location=device))
     test_acc = trainer.evaluate(test=True)
-    print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
+    print("Loaded pretrained model Maini {}!. Test accuracy: {}%".format(model_name, test_acc))
 
     eps_map = utils.EPS[args.dataset]
     eps = eps_map[args.test_lp]
     test_lp = args.test_lp
-    sbsc.sbsc(trainer, args, eps, test_lp)
+    sbsc.sbsc(trainer, args, eps, test_lp, use_cnn_for_dict=True)
 
 
 if __name__=='__main__':
