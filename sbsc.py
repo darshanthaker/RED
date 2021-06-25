@@ -246,9 +246,9 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False):
             Da = raw_Da
             Da = normalize(Da, axis=0)
             x = corrupted_x.reshape(-1)
-            pickle.dump(Ds, open('Ds.pkl', 'wb'))
-            pickle.dump(Da, open('Da.pkl', 'wb'))
-            print("Serialized Ds, Da!")
+            #pickle.dump(Ds, open('Ds.pkl', 'wb'))
+            #pickle.dump(Da, open('Da.pkl', 'wb'))
+            #print("Serialized Ds, Da!")
         if args.solver == 'irls':
             solver = BlockSparseIRLSSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
                     lambda1=args.lambda1, lambda2=args.lambda2, del_threshold=args.del_threshold)
