@@ -169,12 +169,20 @@ class BlockSparseActiveSetSolver(object):
         ca_a = cp.Variable(a_len) 
         objective = norm(x - Ds_a@cs_a - Da_a@ca_a, p=2)**2
 
+        #tmp_objective = objective
+
+        #tmp_objective += self.lambda1 * norm(cs_a, p=2)
+        #tmp_objective += (1.0 - self.lambda1) / 2. * norm(cs_a, p=2)**2
+        #tmp_objective += self.lambda2 * norm(ca_a, p=2)
+        #tmp_objective += (1.0 - self.lambda2) / 2. * norm(ca_a, p=2)**2
+        hier_bi = BlockIndexer(self.block_size, [len(sig_active), len(att_active)])
+        sig_bi = BlockIndexer(self.block_size, [len(sig_active)])
         for i in range(len(sig_active)):
-            cs_i = self.sig_bi.get_block(cs_a, i)
+            cs_i = sig_bi.get_block(cs_a, i)
             objective += self.lambda1 * norm(cs_i, p=2)
             objective += (1.0 - self.lambda1) / 2. * norm(cs_i, p=2)**2
             for j in range(len(att_active)):
-                ca_ij = self.hier_bi.get_block(ca_a, (i, j))
+                ca_ij = hier_bi.get_block(ca_a, (i, j))
                 objective += self.lambda2 * norm(ca_ij, p=2)
                 objective += (1.0 - self.lambda2) / 2. * norm(ca_ij, p=2)**2
         
