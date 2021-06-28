@@ -136,6 +136,10 @@ class BlockSparseActiveSetSolver(object):
 
             if max_sig_idx in sig_active_set and max_att_idx[1] in att_active_set:
                 converged = True
+            ############################
+            sig_active_set = OrderedSet()
+            att_active_set = OrderedSet()
+            ############################
             sig_active_set.add(max_sig_idx)
             att_active_set.add(max_att_idx[1])
             #print("Sig active set: {}. Att active set: {}".format(sig_active_set, att_active_set))
@@ -151,7 +155,7 @@ class BlockSparseActiveSetSolver(object):
                     ca_est = self.hier_bi.set_block(ca_est, (i, j), ca_est_ij)
             #print("Max sig idx: {}. Max att idx: {}".format(max_sig_idx, max_att_idx))
             #set_trace()
-            #converged = True
+            converged = True
             prev_sig_idx = max_sig_idx
             prev_att_idx = max_att_idx
             t += 1
