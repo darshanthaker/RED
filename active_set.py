@@ -124,7 +124,7 @@ class BlockSparseActiveSetSolver(object):
 
             #for i in range(self.num_classes):
             for j in range(self.num_attacks):
-                Da_ij = self.hier_bi.get_block(Da_est, (i, j))
+                Da_ij = self.hier_bi.get_block(Da_est, (max_sig_idx, j))
                 val = Da_ij.T @ (x - Ds_a @ cs_a - Da_a @ ca_a)
                 val_norm = np.linalg.norm(val)
                 #print("{}: norm: {}".format(j, val_norm))
