@@ -11,7 +11,7 @@ from ordered_set import OrderedSet
 class BlockSparseActiveSetSolver(object):
 
     def __init__(self, Ds, Da, num_classes, num_attacks, block_size, \
-                 max_iter=50, lambda1=0.1, lambda2=0.1):
+                 max_iter=4, lambda1=0.1, lambda2=0.1):
         self.Ds = Ds
         self.Da = Da
         self.num_classes = num_classes
@@ -27,37 +27,62 @@ class BlockSparseActiveSetSolver(object):
     def _solve_Ds(self, x):
         Ds_est = copy.deepcopy(self.Ds)
         m = self.Ds.shape[1]
-
-        cs_est = np.zeros(m)
-        converged = False
-        t = 0
-
+        prev_sig_active_set = OrderedSet()
+        sig_active_set = OrderedSet()
         self.sig_bi = BlockIndexer(self.block_size, [self.num_classes])
 
-        prev_sig_idx = None
+        cs_est = np.zeros(m)
+        
+        converged = False
+        t = 0
         while not converged and t < self.max_iter:
-            max_sig_val = None
-            max_sig_val_norm = -float("inf")
-            max_sig_idx = prev_sig_idx
-            #print("----------------{}-----------------".format(t))
+            Ds_a = self.get_active_blocks(Ds_est, self.sig_bi, sig_active_set)
+            cs_a = self.get_active_blocks(cs_est, self.sig_bi, sig_active_set)
+            sig_norms = np.zeros(self.num_classes)
             for i in range(self.num_classes):
                 Ds_i = self.sig_bi.get_block(Ds_est, i)
-                cs_i = self.sig_bi.get_block(cs_est, i)
-                val = Ds_i.T @ (x - Ds_i@cs_i)
-                val_norm = np.linalg.norm(val)
-                if val_norm > max_sig_val_norm:
-                    max_sig_val = val
-                    max_sig_val_norm = val_norm
-                    max_sig_idx = i 
-            #cs_est_i = 1.0 / (1 - self.lambda1) * utils.blocksoft_thres(max_sig_val, self.lambda1)
-            cs_est_i = np.linalg.inv(Ds_i.T @ Ds_i) @ (Ds_i.T @ x)
-            cs_est = self.sig_bi.set_block(cs_est, max_sig_idx, cs_est_i)
-            if prev_sig_idx == max_sig_idx:
+                val = Ds_i.T @ (x - Ds_a @ cs_a)
+                sig_norms[i] = np.linalg.norm(val)
+
+            sorted_sig_norms = np.sort(sig_norms)[::-1]
+            gamma_s = (sorted_sig_norms[0] + sorted_sig_norms[1]) / 2
+            max_sig_idx  = np.argmax(sig_norms)
+            sig_active_set.add(max_sig_idx)
+
+            if sig_active_set.issubset(prev_sig_active_set):
                 converged = True
-            prev_sig_idx = max_sig_idx
+
+            print("Sig active set: {}".format(sig_active_set))
+
+            Ds_a = self.get_active_blocks(Ds_est, self.sig_bi, sig_active_set)
+            s_len = Ds_a.shape[1]
+            cs_a = cp.Variable(s_len)
+            objective = norm(x - Ds_a@cs_a, p=2)**2
+
+            sig_bi = BlockIndexer(self.block_size, [len(sig_active_set)])
+            for i in range(len(sig_active_set)):
+                cs_i = sig_bi.get_block(cs_a, i)
+                objective += gamma_s * self.lambda1 * norm(cs_i, p=2)
+                objective += gamma_s * (1.0 - self.lambda1) / 2. * norm(cs_i, p=2)**2
+        
+            minimizer = cp.Minimize(objective)
+            prob = cp.Problem(minimizer )
+            result = prob.solve(verbose=False, max_iters=75, solver=cp.SCS)
+            cs_est_blocks = np.array(cs_a.value)
+
+            active_sig_bi = BlockIndexer(self.block_size, [len(sig_active_set)])
+            for (sig_idx, i) in enumerate(sig_active_set):
+                try:
+                    cs_est_i = active_sig_bi.get_block(cs_est_blocks, sig_idx)
+                except:
+                    cs_est_i = np.zeros(self.block_size)
+                    print("SOLVER FAILED")
+                cs_est = self.sig_bi.set_block(cs_est, i, cs_est_i)
+
+            prev_sig_active_set = copy.deepcopy(sig_active_set)
             t += 1
         print("Number of iterations: {}".format(t))
-        return cs_est, max_sig_idx
+        return cs_est, sig_active_set
 
     def _solve_full(self, x):
         return self._elastic_net_solver_full(x, self.Ds, self.Da)
@@ -68,13 +93,15 @@ class BlockSparseActiveSetSolver(object):
                 return np.zeros(bi.get_block(x, (0, 0)).shape)
             else:
                 return np.zeros(bi.get_block(x, 0).shape) 
+        if hier_active_set is not None and len(hier_active_set) == 0:
+            return np.zeros(bi.get_block(x, (0, 0)).shape)
         if hier_active_set is not None: 
             x_blocks = [bi.get_block(x, (i, j)) for i in active_set for j in hier_active_set]
         else:
             x_blocks = [bi.get_block(x, i) for i in active_set]
         return np.hstack(x_blocks)
 
-    def _solve_Ds_Da(self, x):
+    def _solve_Ds_Da_alt(self, x):
         Ds_est = copy.deepcopy(self.Ds)
         Da_est = copy.deepcopy(self.Da)
         m = self.Ds.shape[1]
@@ -89,62 +116,49 @@ class BlockSparseActiveSetSolver(object):
         self.hier_bi = BlockIndexer(self.block_size, [self.num_classes, self.num_attacks])
         self.sig_bi = BlockIndexer(self.block_size, [self.num_classes])
 
-        prev_sig_idx = 0
-        prev_att_idx = (0, 0)
+        prev_sig_active_set = OrderedSet()
+        prev_att_active_set = OrderedSet()
         sig_active_set = OrderedSet()
         att_active_set = OrderedSet()
+
+        gamma_s = 10
+        gamma_a = 10
         while not converged and t < self.max_iter:
-            max_sig_val = None
-            max_sig_val_norm = -float("inf")
-            max_sig_idx = prev_sig_idx
-            max_att_val = None
-            max_att_val_norm = -float("inf")
-            max_att_idx = prev_att_idx
             Ds_a = self.get_active_blocks(Ds_est, self.sig_bi, sig_active_set)
             cs_a = self.get_active_blocks(cs_est, self.sig_bi, sig_active_set)
             Da_a = self.get_active_blocks(Da_est, self.hier_bi, sig_active_set, hier_active_set=att_active_set)
             ca_a = self.get_active_blocks(ca_est, self.hier_bi, sig_active_set, hier_active_set=att_active_set)
             #print("----------------{}-----------------".format(t))
             #print("-----------cs---------")
+            sig_norms = np.zeros(self.num_classes)
             for i in range(self.num_classes):
                 Ds_i = self.sig_bi.get_block(Ds_est, i)
                 val = Ds_i.T @ (x - Ds_a @ cs_a - Da_a @ ca_a)
-                val_norm = np.linalg.norm(val)
-                #print("{}: norm: {}".format(i, val_norm))
-                if val_norm > max_sig_val_norm:
-                    max_sig_val = val
-                    max_sig_val_norm = val_norm
-                    max_sig_idx = i 
+                sig_norms[i] = np.linalg.norm(val)
+            sig_norms /= gamma_s
 
-            #print("-----------ca---------")
-            #cs_est_i = 1.0 / (1 - self.lambda1) * utils.blocksoft_thres(max_sig_val, self.lambda1)
-            #cs_est = self.sig_bi.set_block(cs_est, max_sig_idx, cs_est_i)
-            #cs_est_i, _ = self._elastic_net_solver(x, Ds_est, Da_est, max_sig_idx, max_att_idx[1])
-            #cs_est = self.sig_bi.set_block(cs_est, max_sig_idx, cs_est_i)
+            sig_active_idxs = np.where(sig_norms >= self.lambda1)[0]
+            for sig_idx in sig_active_idxs:
+                sig_active_set.add(sig_idx)
 
-            #for i in range(self.num_classes):
-            for j in range(self.num_attacks):
-                Da_ij = self.hier_bi.get_block(Da_est, (max_sig_idx, j))
-                val = Da_ij.T @ (x - Ds_a @ cs_a - Da_a @ ca_a)
-                val_norm = np.linalg.norm(val)
-                #print("{}: norm: {}".format(j, val_norm))
-                if val_norm > max_att_val_norm:
-                    max_att_val = val
-                    max_att_val_norm = val_norm
-                    max_att_idx = (max_sig_idx, j)
-                    #max_att_idx = (i, j)
+            att_norms = np.zeros((self.num_classes, self.num_attacks))
+            for i in range(self.num_classes):
+                for j in range(self.num_attacks):
+                    Da_ij = self.hier_bi.get_block(Da_est, (i, j))
+                    val = Da_ij.T @ (x - Ds_a @ cs_a - Da_a @ ca_a)
+                    att_norms[i][j] = np.linalg.norm(val)
+            att_norms /= gamma_a
 
-            if max_sig_idx in sig_active_set and max_att_idx[1] in att_active_set:
+            att_active_idxs = np.where(att_norms >= self.lambda2)[1]
+            for att_idx in att_active_idxs:
+                att_active_set.add(att_idx)
+
+            #if max_sig_idx in sig_active_set and max_att_idx[1] in att_active_set:
+            if sig_active_set.issubset(prev_sig_active_set) and att_active_set.issubset(prev_att_active_set):
                 converged = True
-            ############################
-            sig_active_set = OrderedSet()
-            att_active_set = OrderedSet()
-            ############################
-            sig_active_set.add(max_sig_idx)
-            att_active_set.add(max_att_idx[1])
-            #print("Sig active set: {}. Att active set: {}".format(sig_active_set, att_active_set))
+            print("Sig active set: {}. Att active set: {}".format(sig_active_set, att_active_set))
 
-            cs_est_blocks, ca_est_blocks = self._elastic_net_solver(x, Ds_est, Da_est, sig_active_set, att_active_set)
+            cs_est_blocks, ca_est_blocks = self._elastic_net_solver(x, Ds_est, Da_est, gamma_s, gamma_a, sig_active_set, att_active_set, reg_sig=True, reg_att=True)
             active_sig_bi = BlockIndexer(self.block_size, [len(sig_active_set)])
             active_hier_bi = BlockIndexer(self.block_size, [len(sig_active_set), len(att_active_set)])
             for (sig_idx, i) in enumerate(sig_active_set):
@@ -153,46 +167,126 @@ class BlockSparseActiveSetSolver(object):
                 for (att_idx, j) in enumerate(att_active_set):
                     ca_est_ij = active_hier_bi.get_block(ca_est_blocks, (sig_idx, att_idx))
                     ca_est = self.hier_bi.set_block(ca_est, (i, j), ca_est_ij)
-            #print("Max sig idx: {}. Max att idx: {}".format(max_sig_idx, max_att_idx))
             #set_trace()
-            converged = True
-            prev_sig_idx = max_sig_idx
-            prev_att_idx = max_att_idx
+            #converged = True
+            prev_sig_active_set = copy.deepcopy(sig_active_set)
+            prev_att_active_set = copy.deepcopy(att_active_set)
             t += 1
         print("Number of iterations: {}".format(t))
         return cs_est, ca_est, sig_active_set, att_active_set
 
-    def _elastic_net_solver(self, x, Ds_est, Da_est, sig_active, att_active):
+    def compute_optimality(self, x, Ds_est, Da_est, Ds_a, cs_a, Da_a, ca_a):
+        sig_norms = np.zeros(self.num_classes)
+        for i in range(self.num_classes):
+            Ds_i = self.sig_bi.get_block(Ds_est, i)
+            val = Ds_i.T @ (x - Ds_a @ cs_a - Da_a @ ca_a)
+            sig_norms[i] = np.linalg.norm(val)
+
+        att_norms = np.zeros((self.num_classes, self.num_attacks))
+        for i in range(self.num_classes):
+            for j in range(self.num_attacks):
+                Da_ij = self.hier_bi.get_block(Da_est, (i, j))
+                val = Da_ij.T @ (x - Ds_a @ cs_a - Da_a @ ca_a)
+                att_norms[i][j] = np.linalg.norm(val)
+        return sig_norms, att_norms
+
+    def _solve_Ds_Da(self, x):
+        Ds_est = copy.deepcopy(self.Ds)
+        Da_est = copy.deepcopy(self.Da)
+        m = self.Ds.shape[1]
+        n = self.Da.shape[1]
+        prev_sig_active_set = OrderedSet()
+        prev_att_active_set = OrderedSet()
+        sig_active_set = OrderedSet()
+        att_active_set = OrderedSet()
+        self.hier_bi = BlockIndexer(self.block_size, [self.num_classes, self.num_attacks])
+        self.sig_bi = BlockIndexer(self.block_size, [self.num_classes])
+
+        cs_est = np.zeros(m)
+        ca_est = np.zeros(n)
+
+        converged = False
+        t = 0
+        while not converged and t < self.max_iter:
+            Ds_a = self.get_active_blocks(Ds_est, self.sig_bi, sig_active_set)
+            cs_a = self.get_active_blocks(cs_est, self.sig_bi, sig_active_set)
+            Da_a = self.get_active_blocks(Da_est, self.hier_bi, sig_active_set, hier_active_set=att_active_set)
+            ca_a = self.get_active_blocks(ca_est, self.hier_bi, sig_active_set, hier_active_set=att_active_set)
+            sig_norms, att_norms = self.compute_optimality(x, Ds_est, Da_est, Ds_a, cs_a, Da_a, ca_a)
+
+            sorted_sig_norms = np.sort(sig_norms)[::-1]
+            sorted_att_norms = np.sort(att_norms.reshape(-1))[::-1]
+            gamma_s = (sorted_sig_norms[0] + sorted_sig_norms[1]) / 2
+            gamma_a = (sorted_att_norms[0] + sorted_att_norms[1]) / 2
+            #gamma_s = sorted_sig_norms[0]
+            #gamma_a = sorted_att_norms[0]
+            print("gamma_s: {}. gamma_a: {}".format(gamma_s, gamma_a))
+            max_sig_idx  = np.argmax(sig_norms)
+            max_att_idx = np.unravel_index(np.argmax(att_norms), att_norms.shape)[1]
+            sig_active_set.add(max_sig_idx)
+            att_active_set.add(max_att_idx)
+
+            if sig_active_set.issubset(prev_sig_active_set) and att_active_set.issubset(prev_att_active_set):
+                converged = True
+                #break
+
+            print("Sig active set: {}. Att active set: {}".format(sig_active_set, att_active_set))
+
+            cs_est_blocks, ca_est_blocks = self._elastic_net_solver(x, Ds_est, Da_est, gamma_s, gamma_a, sig_active_set, att_active_set)
+            active_sig_bi = BlockIndexer(self.block_size, [len(sig_active_set)])
+            active_hier_bi = BlockIndexer(self.block_size, [len(sig_active_set), len(att_active_set)])
+            for (sig_idx, i) in enumerate(sig_active_set):
+                #if i != max_sig_idx:
+                #    continue
+                try:
+                    cs_est_i = active_sig_bi.get_block(cs_est_blocks, sig_idx)
+                except:
+                    cs_est_i = np.zeros(self.block_size)
+                    print("SOLVER FAILED")
+                cs_est = self.sig_bi.set_block(cs_est, i, cs_est_i)
+                for (att_idx, j) in enumerate(att_active_set):
+                    #if i != max_sig_idx and j != max_att_idx:
+                    #    continue
+                    ca_est_ij = active_hier_bi.get_block(ca_est_blocks, (sig_idx, att_idx))
+                    ca_est = self.hier_bi.set_block(ca_est, (i, j), ca_est_ij)
+
+            #print("Max sig idx: {}. Max att idx: {}".format(max_sig_idx, max_att_idx))
+            #set_trace()
+            #converged = True
+            prev_sig_active_set = copy.deepcopy(sig_active_set)
+            prev_att_active_set = copy.deepcopy(att_active_set)
+            t += 1
+        print("Number of iterations: {}".format(t))
+        return cs_est, ca_est, sig_active_set, att_active_set
+
+    @utils.timing
+    def _elastic_net_solver(self, x, Ds_est, Da_est, gamma_s, gamma_a, sig_active, att_active, reg_sig=True, reg_att=True):
         Ds_a = self.get_active_blocks(Ds_est, self.sig_bi, sig_active)
         Da_a = self.get_active_blocks(Da_est, self.hier_bi, sig_active, hier_active_set=att_active)
 
-        s_len = Ds_a.shape[1]         
+        s_len = Ds_a.shape[1]
         a_len = Da_a.shape[1]
 
         cs_a = cp.Variable(s_len)
         ca_a = cp.Variable(a_len) 
         objective = norm(x - Ds_a@cs_a - Da_a@ca_a, p=2)**2
 
-        #tmp_objective = objective
-
-        #tmp_objective += self.lambda1 * norm(cs_a, p=2)
-        #tmp_objective += (1.0 - self.lambda1) / 2. * norm(cs_a, p=2)**2
-        #tmp_objective += self.lambda2 * norm(ca_a, p=2)
-        #tmp_objective += (1.0 - self.lambda2) / 2. * norm(ca_a, p=2)**2
         hier_bi = BlockIndexer(self.block_size, [len(sig_active), len(att_active)])
         sig_bi = BlockIndexer(self.block_size, [len(sig_active)])
         for i in range(len(sig_active)):
-            cs_i = sig_bi.get_block(cs_a, i)
-            objective += self.lambda1 * norm(cs_i, p=2)
-            objective += (1.0 - self.lambda1) / 2. * norm(cs_i, p=2)**2
+            if reg_sig:
+                cs_i = sig_bi.get_block(cs_a, i)
+                objective += gamma_s * self.lambda1 * norm(cs_i, p=2)
+                objective += gamma_s * (1.0 - self.lambda1) / 2. * norm(cs_i, p=2)**2
             for j in range(len(att_active)):
-                ca_ij = hier_bi.get_block(ca_a, (i, j))
-                objective += self.lambda2 * norm(ca_ij, p=2)
-                objective += (1.0 - self.lambda2) / 2. * norm(ca_ij, p=2)**2
+                if reg_att:
+                    ca_ij = hier_bi.get_block(ca_a, (i, j))
+                    objective += gamma_a * self.lambda2 * norm(ca_ij, p=2)
+                    objective += gamma_a * (1.0 - self.lambda2) / 2. * norm(ca_ij, p=2)**2
         
         minimizer = cp.Minimize(objective)
         prob = cp.Problem(minimizer)
-        result = prob.solve(verbose=False)
+        result = prob.solve(verbose=False, max_iters=50, solver=cp.SCS)
         cs_a_opt = np.array(cs_a.value)
         ca_a_opt = np.array(ca_a.value)
         return cs_a_opt, ca_a_opt
@@ -226,11 +320,57 @@ class BlockSparseActiveSetSolver(object):
         ca_opt = np.array(ca.value)
         return cs_opt, ca_opt, Ds, Da
 
-    @utils.timing
+    #@utils.timing
     def solve(self, x, alg='Ds+Da'):
         if alg == 'Ds':
-            return self._solve_Ds(x)
+            cs_est, sig_active_set = self._solve_Ds(x)
+            Ds_est = self.Ds
+            Da_est = self.Da
+            sig_active_set = list(sig_active_set)
+            err_class = list()
+            for i in sig_active_set:
+                Ds_blk = self.sig_bi.get_block(Ds_est, i)
+                cs_blk = self.sig_bi.get_block(cs_est, i)
+                err_class.append(np.linalg.norm(x - Ds_blk@cs_blk))
+            err_class = np.array(err_class)
+            i_star = np.argmin(err_class)
+            Ds_blk = self.sig_bi.get_block(Ds_est, i_star)
+            cs_blk = self.sig_bi.get_block(cs_est, i_star)
+            denoised = Ds_blk@cs_blk
+            class_pred = sig_active_set[i_star]
+            return cs_est, Ds_est, class_pred, denoised
         elif alg == 'Ds+Da':
-            return self._solve_Ds_Da(x)
+            cs_est, ca_est, sig_active_set, att_active_set = self._solve_Ds_Da(x)
+            Ds_est = self.Ds
+            Da_est = self.Da
         elif alg == 'en_full':
-            return self._solve_full(x)
+            cs_est, ca_est, Ds_est, Da_est = self._solve_full(x)
+            sig_active_set = range(self.sig_bi.num_blocks[0])
+            att_active_est = range(self.num_attacks)
+
+        sig_active_set = list(sig_active_set)
+        att_active_set = list(att_active_set)
+        print("Sig active set: {}. Att active set: {}".format(sig_active_set, att_active_set))
+        err_class = list()
+        for i in sig_active_set:
+            Ds_blk = self.sig_bi.get_block(Ds_est, i)
+            cs_blk = self.sig_bi.get_block(cs_est, i)
+            # TODO: This shouldn't be full Da.
+            err_class.append(np.linalg.norm(x - Ds_blk@cs_blk - Da_est@ca_est))
+        err_class = np.array(err_class)
+        i_star = np.argmin(err_class)
+        class_pred = sig_active_set[i_star]
+
+        err_attack = list()
+        for j in att_active_set:
+            Da_blk = self.hier_bi.get_block(Da_est, (class_pred, j)) 
+            ca_blk = self.hier_bi.get_block(ca_est, (class_pred, j)) 
+            err_attack.append(np.linalg.norm(x - Ds_est@cs_est - Da_blk@ca_blk))
+        err_attack = np.array(err_attack)
+        j_star = np.argmin(err_attack)
+        attack_pred = att_active_set[j_star]
+        Ds_blk = self.sig_bi.get_block(Ds_est, class_pred)
+        cs_blk = self.sig_bi.get_block(cs_est, class_pred)
+        denoised = Ds_blk@cs_blk
+        return cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, denoised, err_attack
+    

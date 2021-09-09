@@ -199,6 +199,7 @@ class Trainer(object):
             acc = num_correct / len(data_loader.dataset) * 100.
         return acc
 
+    @utils.timing
     def compute_train_dictionary(self, normalize_cols=True):
         train = self.train_full
         dictionary = list()
@@ -220,6 +221,7 @@ class Trainer(object):
         else:
             return dictionary
 
+    @utils.timing
     def compute_lp_dictionary(self, eps, lp, block=False, net=None, lp_variant=None):
         idx = list(range(self.N_train))
         bsz = self.N_train
@@ -277,6 +279,11 @@ class Trainer(object):
             net = self.net
         net.eval()
         net.zero_grad()
+
+        torch.manual_seed(0)
+        np.random.seed(0)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
         if lp == np.infty: 
             adversary = LinfPGDAttack(
