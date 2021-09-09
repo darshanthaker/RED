@@ -199,6 +199,7 @@ class Trainer(object):
             acc = num_correct / len(data_loader.dataset) * 100.
         return acc
 
+    @utils.timing
     def compute_train_dictionary(self, normalize_cols=True):
         train = self.train_full
         dictionary = list()
@@ -220,6 +221,7 @@ class Trainer(object):
         else:
             return dictionary
 
+    @utils.timing
     def compute_lp_dictionary(self, eps, lp, block=False, net=None, lp_variant=None):
         idx = list(range(self.N_train))
         bsz = self.N_train
@@ -271,61 +273,66 @@ class Trainer(object):
         if torch.cuda.is_available():
             bx = bx.cuda()
             by = by.cuda()
-            step_size = self.step_map[lp]
+        step_size = self.step_map[lp]
 
-            if net is None:
-                net = self.net
-            net.eval()
-            net.zero_grad()
+        if net is None:
+            net = self.net
+        net.eval()
+        net.zero_grad()
 
-            if lp == np.infty: 
-                adversary = LinfPGDAttack(
-                    net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
-                    nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
-                    targeted=False)
-                if self.maini_attack:
-                    delta = utils.pgd_linf(net, bx, by, restarts=10, num_iter=100, epsilon=eps)
-                    if only_delta:
-                        out = delta
-                    else:
-                        out = bx + delta
-                    out = out.cpu().detach().numpy()
-                    return out
-            elif lp == 2 and lp_variant is None:
-                adversary = L2PGDAttack(
-                    net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
-                    nb_iter=200, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
-                    targeted=False)
-                if self.maini_attack:
-                    delta = utils.pgd_l2(net, bx, by, restarts=10, num_iter=200, epsilon=eps)
-                    if only_delta:
-                        out = delta
-                    else:
-                        out = bx + delta
-                    out = out.cpu().detach().numpy()
-                    return out
-            elif lp == 1:
-                adversary = SparseL1DescentAttack(
-                    net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
-                    nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
-                    targeted=False)
-                if self.maini_attack:
-                    delta = utils.pgd_l1_topk(net, bx, by, restarts=10, num_iter=100, epsilon=eps)
-                    if only_delta:
-                        out = delta
-                    else:
-                        out = bx + delta
-                    out = out.cpu().detach().numpy()
-                    return out
-            elif lp == 2 and lp_variant == 'cw':
-                adversary = CarliniWagnerL2Attack(
-                    net, num_classes=self.num_classes, learning_rate=step_size, \
-                    max_iterations=100)
-            out = adversary.perturb(bx, by)
-            if only_delta:
-                out = out - bx
-            out = out.cpu().detach().numpy()
-            return out
+        torch.manual_seed(0)
+        np.random.seed(0)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+        if lp == np.infty: 
+            adversary = LinfPGDAttack(
+                net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
+                nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
+                targeted=False)
+            if self.maini_attack:
+                delta = utils.pgd_linf(net, bx, by, restarts=10, num_iter=100, epsilon=eps)
+                if only_delta:
+                    out = delta
+                else:
+                    out = bx + delta
+                out = out.cpu().detach().numpy()
+                return out
+        elif lp == 2 and lp_variant is None:
+            adversary = L2PGDAttack(
+                net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
+                nb_iter=200, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
+                targeted=False)
+            if self.maini_attack:
+                delta = utils.pgd_l2(net, bx, by, restarts=10, num_iter=200, epsilon=eps)
+                if only_delta:
+                    out = delta
+                else:
+                    out = bx + delta
+                out = out.cpu().detach().numpy()
+                return out
+        elif lp == 1:
+            adversary = SparseL1DescentAttack(
+                net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
+                nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
+                targeted=False)
+            if self.maini_attack:
+                delta = utils.pgd_l1_topk(net, bx, by, restarts=10, num_iter=100, epsilon=eps)
+                if only_delta:
+                    out = delta
+                else:
+                    out = bx + delta
+                out = out.cpu().detach().numpy()
+                return out
+        elif lp == 2 and lp_variant == 'cw':
+            adversary = CarliniWagnerL2Attack(
+                net, num_classes=self.num_classes, learning_rate=step_size, \
+                max_iterations=100)
+        out = adversary.perturb(bx, by)
+        if only_delta:
+            out = out - bx
+        out = out.cpu().detach().numpy()
+        return out
 
     def test_lp_attack(self, lp, bx, by, eps, realizable=False, lp_variant=None):
         bx = torch.from_numpy(bx)

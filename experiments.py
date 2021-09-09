@@ -194,18 +194,35 @@ def eps_grid(args):
 def sbsc_test(args):
     np.random.seed(0)
     trainer = Trainer(args, use_maini_cnn=False)
-    #trainer.train(75, 0.05) 
-    trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset)))
+    #trainer.train() 
+    #set_trace()
+    trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset), map_location=torch.device('cpu')))
     test_acc = trainer.evaluate(test=True)
     print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
 
     eps_map = utils.EPS[args.dataset]
     eps = eps_map[args.test_lp]
+    eps = 0.005
     test_lp = args.test_lp
     lp_variant = args.lp_variant
     print("-------------EPS = {}---------------".format(eps))
     sbsc.sbsc(trainer, args, eps, test_lp, lp_variant)
     #sbsc.serialize_dictionaries(trainer, args)
+
+def sbsc_test_zero_eps(args):
+    np.random.seed(0)
+    trainer = Trainer(args, use_maini_cnn=False)
+    #trainer.train() 
+    #set_trace()
+    trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset), map_location=torch.device('cpu')))
+    test_acc = trainer.evaluate(test=True)
+    print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
+
+    eps = 0
+    test_lp = args.test_lp
+    lp_variant = args.lp_variant
+    print("-------------EPS = {}---------------".format(eps))
+    sbsc.sbsc(trainer, args, eps, test_lp, lp_variant)
 
 def sbsc_maini_test(args):
     np.random.seed(0)
@@ -225,6 +242,28 @@ def sbsc_maini_test(args):
     test_lp = args.test_lp
     sbsc.sbsc(trainer, args, eps, test_lp, use_cnn_for_dict=True)
 
+# element-wise max of all attacks in toolchain
+def adaptive_attack(args):
+    np.random.seed(0)
+    trainer = Trainer(args, use_maini_cnn=False)
+
+    trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset), map_location=torch.device('cpu')))
+    test_acc = trainer.evaluate(test=True)
+    print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
+
+    test_idx = np.random.choice(list(range(trainer.N_test)), 100)
+    test_x = trainer.test_X[test_idx, :, :]
+    test_y = trainer.test_y[test_idx]
+
+    eps_map = utils.EPS[args.dataset]
+    attacks = list()
+    for lp in args.toolchain:
+        lp = trainer.test_lp_attack(lp, test_x, test_y, eps_map[lp], realizable=False, lp_variant=None)
+        attacks.append(lp)
+    test_adv = np.maximum.reduce(attacks)  
+
+    sbsc.sbsc(trainer, args, 0, -1, None, test_adv=test_adv)
+    set_trace()
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description='Experiments')
@@ -232,6 +271,8 @@ if __name__=='__main__':
     args = parser.parse_args()
 
     #sbsc_maini_test(args)
+    #sbsc_test_zero_eps(args)
     sbsc_test(args)
+    #adaptive_attack(args)
     #eps_grid(args)
     #eps_plot()

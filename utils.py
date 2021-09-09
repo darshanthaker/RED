@@ -40,7 +40,7 @@ SIZE_MAP = {'yale': 20, \
 def get_parser(parser):
     parser.add_argument('--dataset', default='mnist', type=str, help='Dataset to use for experiments')
     parser.add_argument('--lr', default=0.01, type=float, help='Learning rate for training network')
-    parser.add_argument('--num_epochs', default=5, type=int, help='Number of epochs to train network')
+    parser.add_argument('--num_epochs', default=50, type=int, help='Number of epochs to train network')
     parser.add_argument('--bsz', default=128, type=int, help='Batch size')
     parser.add_argument('--arch', default='carlini_cnn', type=str, help='Network architecture')
     parser.add_argument('--pretrained_path', default="", type=str, help='Path to find pretrained model')
@@ -55,6 +55,8 @@ def get_parser(parser):
     parser.add_argument('--lambda2', default=15, type=float, help='Lambda2 for IRLS')
     parser.add_argument('--del_threshold', default=0.2, type=float, help='Del threshold for IRLS')
     parser.add_argument('--solver', default='active', type=str, help='Solver to use')
+    parser.add_argument('--use_cheat_grad', action='store_true', help='Whether or not to use test example in Jacobian computation')
+    parser.add_argument('--realizable', action='store_true', help='Realizable or not')
     return parser 
 
 
@@ -430,3 +432,27 @@ class ScatteringTransform(object):
             embed_sample = embed_sample.reshape((-1, new_C, \
                     N1//2**self.J, N2//2**self.J))
         return embed_sample
+
+import time
+
+def timing(func):
+    """
+        Timing decorator that will take any function and time it. Will print to 
+        stdout how long the function took in seconds.
+        Example usage:
+        @timing
+        def some_func():
+            # Some long function.
+        When running some_func(), it will print out that:
+            'some_func took x seconds' 
+        This will be useful to time functions easily by adding a decorator.
+    """
+
+    def wrapper(*arg, **kwargs):
+        t1 = time.time()
+        ret_val = func(*arg, **kwargs)
+        t2 = time.time()
+        print("{} took {} seconds".format(func.__name__, t2 - t1))
+        return ret_val
+
+    return wrapper
