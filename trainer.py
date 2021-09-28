@@ -17,6 +17,23 @@ from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
 from advertorch.attacks import SparseL1DescentAttack, L2PGDAttack, LinfPGDAttack, CarliniWagnerL2Attack
 
+class Warp(nn.Module):
+  
+    def __init__(self, d):
+        super().__init__()
+        self.U = np.random.normal(size=(d, d)).reshape((d, d))
+
+    def forward(self, x):
+        #x = x.detach().numpy()
+        #out = x.T @ self.U @ x
+        #out = torch.from_numpy(out)
+        out = np.exp(x)
+        return out
+
+    def inverse(self, x):
+        out = np.log(x)
+        return out
+
 class Trainer(object):
 
     def __init__(self, args, use_maini_cnn=False):
@@ -50,6 +67,9 @@ class Trainer(object):
             self.in_channels = 1
             #else:
             #    self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
+        elif self.dataset == 'synthetic':
+            self.d = 512
+            self.num_classes = 10
         if self.use_cnn:
             d_arch = '{}_{}'.format(self.arch, self.dataset)
             self.net = CNN(arch=d_arch, embedding=self.embedding, in_channels=self.in_channels,
@@ -62,6 +82,7 @@ class Trainer(object):
         else:
             self.maini_attack = False
         self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
+        self.warp = Warp(self.d)
         if torch.cuda.is_available():
             self.net = self.net.cuda()
         self.loss_fn = nn.CrossEntropyLoss()
@@ -103,6 +124,15 @@ class Trainer(object):
                 download=True, transform=transform) 
             self.test_dataset = torchvision.datasets.MNIST('files/', train=False, \
                 download=True, transform=transform)
+        elif self.dataset == 'synthetic':
+            subspace_dim = 10
+            block_size = 200
+            for i in range(self.num_classes):
+                c_i = np.random.normal(subspace_dim, utils.SIZE_MAP[self.dataset]) 
+                U_i = np.random.normal(self.d, subspace_dim)
+                Z_i = U_i @ c_i
+                X_i = self.warp.inverse(Z_i)
+                
         self.N_train = len(self.train_dataset)
         self.N_test = len(self.test_dataset)
 
@@ -213,6 +243,10 @@ class Trainer(object):
                     if torch.cuda.is_available():
                         x = x.cuda()
                     embed_x = self.scattering(x).cpu().detach().numpy()
+                    dictionary.append(embed_x.reshape(-1))
+                elif self.embedding == 'warp':
+                    x = x.reshape(-1)
+                    embed_x = self.warp(x)
                     dictionary.append(embed_x.reshape(-1))
                        
         dictionary = np.array(dictionary).T

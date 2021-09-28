@@ -35,7 +35,8 @@ STEP = {'mnist': {1: 0.8, \
         np.infty: 0.003}}
 SIZE_MAP = {'yale': 20, \
             'cifar': 200, \
-            'mnist': 200}
+            'mnist': 200, \
+            'synthetic:' 200}
 
 def get_parser(parser):
     parser.add_argument('--dataset', default='mnist', type=str, help='Dataset to use for experiments')

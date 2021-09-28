@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use('Agg')
 import numpy as np
 import cvxpy as cp
 import sys
@@ -244,13 +246,15 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
             try:
                 grad = pickle.load(open('files/jacobians_{}/grad_{}_{}_{}.pkl'.format(args.dataset, test_lp, eps, t), 'rb'))
             except:
-                grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, tcorrupted_x, vectorize=True)
+                #grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, tcorrupted_x, vectorize=True)
+                grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, tcorrupted_x)
                 grad = grad.reshape(-1, trainer.d)
                 pickle.dump(grad, open('files/jacobians_{}/grad_{}_{}_{}.pkl'.format(args.dataset, test_lp, eps, t), 'wb'))
             try:
                 cheat_grad = pickle.load(open('files/jacobians_{}/cheat_grad_{}.pkl'.format(args.dataset, t), 'rb'))
             except:
-                cheat_grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, cheat_x, vectorize=True)
+                #cheat_grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, cheat_x, vectorize=True)
+                cheat_grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, cheat_x)
                 cheat_grad = cheat_grad.reshape(-1, trainer.d)
                 pickle.dump(cheat_grad, open('files/jacobians_{}/cheat_grad_{}.pkl'.format(args.dataset, t), 'wb'))
             end = time.time()
@@ -266,10 +270,20 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
             Da = normalize(Da, axis=0)
             x = trainer.scattering(tcorrupted_x).cpu().detach().numpy().reshape(-1)
         elif args.embedding == 'warp':
-            #swirled = swirl(image, rotation=0, strength=5, radius=120)    
             tcorrupted_x = torch.from_numpy(corrupted_x).unsqueeze(0)
-            grad = torch.autograd.functional.jacobian(swirl, tcorrupted_x, vectorize=True)
-            set_trace()
+            traw_x = torch.from_numpy(raw_x[None, :])
+            if args.realizable:
+                x_Da = trainer._lp_attack(test_lp, eps, traw_x, ty, only_delta=True)
+                x_Da = x_Da.reshape(-1)
+                raw_Da[:, 2000*toolchain.index(test_lp) + 200*ty + 50] = x_Da
+                flattened_x = raw_x.reshape(-1)
+                Ds[:, 200*ty+50] = trainer.warp(flattened_x)
+            grad = torch.autograd.functional.jacobian(trainer.warp, tcorrupted_x)
+            grad = grad.reshape(-1, trainer.d)
+            Da = grad @ raw_Da
+            Ds = normalize(Ds, axis=0)
+            Da = normalize(Da, axis=0)
+            x = trainer.warp(corrupted_x.reshape(-1))
         else:
             Da = raw_Da
             Ds = normalize(Ds, axis=0)
@@ -321,6 +335,9 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         #results = [fut.get() for fut in futs]
     for res in results:
         cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, dn, err_attack = res
+        plt.bar(np.arange(len(cs_est)), cs_est)
+        plt.savefig('cs_est.png')
+        set_trace()
         #cs_est, Ds_est, class_pred, dn = res
         #attack_pred = -1
         class_preds.append(class_pred)

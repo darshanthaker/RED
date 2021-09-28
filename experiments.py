@@ -202,7 +202,6 @@ def sbsc_test(args):
 
     eps_map = utils.EPS[args.dataset]
     eps = eps_map[args.test_lp]
-    eps = 0.005
     test_lp = args.test_lp
     lp_variant = args.lp_variant
     print("-------------EPS = {}---------------".format(eps))
