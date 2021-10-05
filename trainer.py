@@ -23,15 +23,18 @@ class Warp(nn.Module):
         super().__init__()
         self.U = np.random.normal(size=(d, d)).reshape((d, d))
 
-    def forward(self, x):
+    def inverse(self, x):
         #x = x.detach().numpy()
         #out = x.T @ self.U @ x
         #out = torch.from_numpy(out)
         out = np.exp(x)
+        #out = torch.from_numpy(out)
         return out
 
-    def inverse(self, x):
+    def forward(self, x):
+        x = x.detach().numpy()
         out = np.log(x)
+        out = torch.from_numpy(out)
         return out
 
 class Trainer(object):
@@ -69,6 +72,7 @@ class Trainer(object):
             #    self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
         elif self.dataset == 'synthetic':
             self.d = 512
+            self.input_shape = ()
             self.num_classes = 10
         if self.use_cnn:
             d_arch = '{}_{}'.format(self.arch, self.dataset)
@@ -81,8 +85,10 @@ class Trainer(object):
             self.maini_attack = True
         else:
             self.maini_attack = False
-        self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
-        self.warp = Warp(self.d)
+        if self.embedding == 'scattering':
+            self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
+        elif self.embedding == 'warp':
+            self.warp = Warp(self.d)
         if torch.cuda.is_available():
             self.net = self.net.cuda()
         self.loss_fn = nn.CrossEntropyLoss()
@@ -127,11 +133,23 @@ class Trainer(object):
         elif self.dataset == 'synthetic':
             subspace_dim = 10
             block_size = 200
+            raw_train_X  = list()
+            raw_train_y = list()
             for i in range(self.num_classes):
-                c_i = np.random.normal(subspace_dim, utils.SIZE_MAP[self.dataset]) 
-                U_i = np.random.normal(self.d, subspace_dim)
+                c_i = np.random.normal(size=(subspace_dim, utils.SIZE_MAP[self.dataset])).reshape((subspace_dim, utils.SIZE_MAP[self.dataset]))
+                U_i = np.random.normal(size=(self.d, subspace_dim)).reshape((self.d, subspace_dim))
                 Z_i = U_i @ c_i
                 X_i = self.warp.inverse(Z_i)
+                y_i = np.array([i] * utils.SIZE_MAP[self.dataset])
+                raw_train_X.append(X_i)
+                raw_train_y.append(y_i)
+           
+            raw_train_X = np.hstack(raw_train_X)
+            raw_train_y = np.hstack(raw_train_y) 
+            raw_train_X = torch.from_numpy(raw_train_X).T
+            raw_train_y = torch.from_numpy(raw_train_y).T
+            self.train_dataset = utils.YaleDataset(raw_train_X, raw_train_y)
+            self.test_dataset = self.train_dataset 
                 
         self.N_train = len(self.train_dataset)
         self.N_test = len(self.test_dataset)

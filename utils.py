@@ -23,7 +23,11 @@ EPS = {'mnist': {1: 10., \
         np.infty: 0.03},
         'yale': {1: 7.5, \
         2: 1.0,
-        np.infty: 0.03}}
+        np.infty: 0.03}, \
+        'synthetic': {1: 10., \
+        2: 2., \
+        np.infty: 0.3}
+        }
 STEP = {'mnist': {1: 0.8, \
         2: 0.1, \
         np.infty: 0.01},
@@ -32,11 +36,14 @@ STEP = {'mnist': {1: 0.8, \
         np.infty: 0.003}, \
         'yale': {1: 1.0, \
         2: 0.02, \
-        np.infty: 0.003}}
+        np.infty: 0.003}, \
+        'synthetic': {1: 0.8, \
+        2: 0.1, \
+        np.infty: 0.01}}
 SIZE_MAP = {'yale': 20, \
             'cifar': 200, \
             'mnist': 200, \
-            'synthetic:' 200}
+            'synthetic': 200}
 
 def get_parser(parser):
     parser.add_argument('--dataset', default='mnist', type=str, help='Dataset to use for experiments')
