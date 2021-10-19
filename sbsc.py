@@ -1,5 +1,4 @@
 import matplotlib
-matplotlib.use('Agg')
 import numpy as np
 import cvxpy as cp
 import sys
@@ -160,13 +159,30 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
             attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack))
 
     np.random.seed(0)
-    #test_idx = list(range(100))
-    test_idx = np.random.choice(list(range(trainer.N_test)), 100)
-    #test_idx = list(range(trainer.N_test))
-    test_x = trainer.test_X[test_idx, :, :]
-    test_y = trainer.test_y[test_idx]
-    Ds = trainer.compute_train_dictionary(trainer.train_full)
+    raw_Ds = trainer.compute_train_dictionary()
+    if trainer.embedding == 'warp':
+        Ds = trainer.warp(raw_Ds)
+    elif trainer.embedding == 'scattering':
+        Ds = raw_Ds
     raw_Da = np.hstack(attack_dicts)
+
+    if args.make_realizable:
+        test_x = list()
+        test_y = list()
+        num_s = 0
+        for i in range(100):
+            cs_star = np.zeros(Ds.shape[1], dtype=np.float32)
+            #num_s = np.random.randint(25)
+            cs_star[num_s:num_s+1] = 1.0
+            num_s += 1
+            test_x.append(raw_Ds @ cs_star)
+            test_y.append(0)
+        test_x = np.vstack(test_x)
+        test_y = np.array(test_y)
+    else:
+        test_idx = np.random.choice(list(range(trainer.N_test)), 100)
+        test_x = trainer.test_X[test_idx, :]
+        test_y = trainer.test_y[test_idx]
     #pickle.dump(Ds, open('files/Ds.pkl', 'wb'))
     #pickle.dump(raw_Da, open('files/raw_Da.pkl', 'wb'))
     #Ds = pickle.load(open('files/Ds.pkl', 'rb'))
@@ -178,6 +194,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     
     if test_adv is None:
         test_adv = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant)
+        delta = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant, only_delta=True)
     #real_test_adv = trainer.test_lp_attack(test_lp, test_x, test_y, 0.3, realizable=False, lp_variant=lp_variant)
 
     ####### MAINI CODE
@@ -218,7 +235,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     attack_preds = list()
     denoised = list()
     mismatch = 0
-    num_examples = 10
+    num_examples = 100
     solvers = list()
     xs = list()
     for t in range(num_examples):
@@ -272,17 +289,12 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         elif args.embedding == 'warp':
             tcorrupted_x = torch.from_numpy(corrupted_x).unsqueeze(0)
             traw_x = torch.from_numpy(raw_x[None, :])
-            if args.realizable:
-                x_Da = trainer._lp_attack(test_lp, eps, traw_x, ty, only_delta=True)
-                x_Da = x_Da.reshape(-1)
-                raw_Da[:, 2000*toolchain.index(test_lp) + 200*ty + 50] = x_Da
-                flattened_x = raw_x.reshape(-1)
-                Ds[:, 200*ty+50] = trainer.warp(flattened_x)
-            grad = torch.autograd.functional.jacobian(trainer.warp, tcorrupted_x)
+            grad = torch.autograd.functional.jacobian(trainer.warp, tcorrupted_x, strict=True)
             grad = grad.reshape(-1, trainer.d)
             Da = grad @ raw_Da
             Ds = normalize(Ds, axis=0)
             Da = normalize(Da, axis=0)
+            #x = trainer.warp(corrupted_x.reshape(-1)).detach().numpy()
             x = trainer.warp(corrupted_x.reshape(-1))
         else:
             Da = raw_Da
@@ -333,11 +345,13 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
             """
         #futs = [p.apply_async(solvers[i].solve, args=([xs[i]])) for i in range(num_examples)]
         #results = [fut.get() for fut in futs]
-    for res in results:
+    for (res_idx, res) in enumerate(results):
         cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, dn, err_attack = res
-        plt.bar(np.arange(len(cs_est)), cs_est)
-        plt.savefig('cs_est.png')
-        set_trace()
+        pickle.dump(cs_est, open('files/est_nowarp/cs_est_{}.pkl'.format(res_idx), 'wb'))
+        pickle.dump(ca_est, open('files/est_nowarp/ca_est_{}.pkl'.format(res_idx), 'wb'))
+        #plt.bar(np.arange(len(cs_est)), cs_est)
+        #plt.savefig('cs_est.png')
+        #set_trace()
         #cs_est, Ds_est, class_pred, dn = res
         #attack_pred = -1
         class_preds.append(class_pred)

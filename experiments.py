@@ -194,7 +194,7 @@ def eps_grid(args):
 def sbsc_test(args):
     np.random.seed(0)
     trainer = Trainer(args, use_maini_cnn=False)
-    trainer.train() 
+    #trainer.train() 
     #set_trace()
     trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset), map_location=torch.device('cpu')))
     test_acc = trainer.evaluate(test=True)

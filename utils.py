@@ -24,9 +24,9 @@ EPS = {'mnist': {1: 10., \
         'yale': {1: 7.5, \
         2: 1.0,
         np.infty: 0.03}, \
-        'synthetic': {1: 10., \
-        2: 2., \
-        np.infty: 0.3}
+        'synthetic': {1: 20., \
+        2: 4., \
+        np.infty: 0.6}
         }
 STEP = {'mnist': {1: 0.8, \
         2: 0.1, \
@@ -47,8 +47,8 @@ SIZE_MAP = {'yale': 20, \
 
 def get_parser(parser):
     parser.add_argument('--dataset', default='mnist', type=str, help='Dataset to use for experiments')
-    parser.add_argument('--lr', default=0.01, type=float, help='Learning rate for training network')
-    parser.add_argument('--num_epochs', default=50, type=int, help='Number of epochs to train network')
+    parser.add_argument('--lr', default=0.1, type=float, help='Learning rate for training network')
+    parser.add_argument('--num_epochs', default=100, type=int, help='Number of epochs to train network')
     parser.add_argument('--bsz', default=128, type=int, help='Batch size')
     parser.add_argument('--arch', default='carlini_cnn', type=str, help='Network architecture')
     parser.add_argument('--pretrained_path', default="", type=str, help='Path to find pretrained model')
@@ -65,6 +65,7 @@ def get_parser(parser):
     parser.add_argument('--solver', default='active', type=str, help='Solver to use')
     parser.add_argument('--use_cheat_grad', action='store_true', help='Whether or not to use test example in Jacobian computation')
     parser.add_argument('--realizable', action='store_true', help='Realizable or not')
+    parser.add_argument('--make_realizable', action='store_true', help='Make Realizable or not')
     return parser 
 
 

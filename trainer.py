@@ -27,14 +27,19 @@ class Warp(nn.Module):
         #x = x.detach().numpy()
         #out = x.T @ self.U @ x
         #out = torch.from_numpy(out)
-        out = np.exp(x)
+        #out = np.exp(x)
+        out = np.abs(x)**(1/3) * np.sign(x)
+        #out = x
         #out = torch.from_numpy(out)
         return out
 
     def forward(self, x):
-        x = x.detach().numpy()
-        out = np.log(x)
-        out = torch.from_numpy(out)
+        #if not isinstance(x, np.ndarray):
+        #    x = x.detach().numpy()
+        out = x**3
+        #out = x
+        #out = np.log(x)
+        #out = torch.from_numpy(out)
         return out
 
 class Trainer(object):
@@ -71,9 +76,9 @@ class Trainer(object):
             #else:
             #    self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
         elif self.dataset == 'synthetic':
-            self.d = 512
+            self.d = 300
             self.input_shape = ()
-            self.num_classes = 10
+            self.num_classes = 2
         if self.use_cnn:
             d_arch = '{}_{}'.format(self.arch, self.dataset)
             self.net = CNN(arch=d_arch, embedding=self.embedding, in_channels=self.in_channels,
@@ -131,23 +136,37 @@ class Trainer(object):
             self.test_dataset = torchvision.datasets.MNIST('files/', train=False, \
                 download=True, transform=transform)
         elif self.dataset == 'synthetic':
-            subspace_dim = 10
-            block_size = 200
+            subspace_dim = 50
+            block_size = utils.SIZE_MAP[self.dataset]
             raw_train_X  = list()
             raw_train_y = list()
-            for i in range(self.num_classes):
-                c_i = np.random.normal(size=(subspace_dim, utils.SIZE_MAP[self.dataset])).reshape((subspace_dim, utils.SIZE_MAP[self.dataset]))
-                U_i = np.random.normal(size=(self.d, subspace_dim)).reshape((self.d, subspace_dim))
-                Z_i = U_i @ c_i
-                X_i = self.warp.inverse(Z_i)
-                y_i = np.array([i] * utils.SIZE_MAP[self.dataset])
+            N = self.num_classes * block_size
+            assert self.num_classes == 2
+            for i in range(N):
+                elem1 = np.random.multivariate_normal(np.zeros(subspace_dim), np.eye(subspace_dim))  
+                elem1 /= np.linalg.norm(elem1)
+                elem = np.zeros(self.d, dtype=np.float32)
+                if i < N // 2:
+                    elem[:subspace_dim] = elem1
+                    raw_train_y.append(0)
+                else:
+                    elem[(self.d - subspace_dim):] = elem1
+                    raw_train_y.append(1)
+                #c_i = np.random.normal(size=(subspace_dim, utils.SIZE_MAP[self.dataset])).reshape((subspace_dim, utils.SIZE_MAP[self.dataset]))
+                #U_i = np.random.normal(size=(self.d, subspace_dim)).reshape((self.d, subspace_dim))
+                #Z_i = U_i @ c_i
+                #X_i = self.warp.inverse(Z_i)
+                #y_i = np.array([i] * utils.SIZE_MAP[self.dataset])
+                X_i = self.warp.inverse(elem)
+                #X_i = elem
+                #set_trace()
+                #X_i /= np.linalg.norm(X_i)
                 raw_train_X.append(X_i)
-                raw_train_y.append(y_i)
            
-            raw_train_X = np.hstack(raw_train_X)
-            raw_train_y = np.hstack(raw_train_y) 
-            raw_train_X = torch.from_numpy(raw_train_X).T
-            raw_train_y = torch.from_numpy(raw_train_y).T
+            raw_train_X = np.vstack(raw_train_X)
+            raw_train_y = np.hstack(raw_train_y)
+            raw_train_X = torch.from_numpy(raw_train_X)
+            raw_train_y = torch.from_numpy(raw_train_y)
             self.train_dataset = utils.YaleDataset(raw_train_X, raw_train_y)
             self.test_dataset = self.train_dataset 
                 
@@ -247,14 +266,13 @@ class Trainer(object):
             acc = num_correct / len(data_loader.dataset) * 100.
         return acc
 
-    @utils.timing
     def compute_train_dictionary(self, normalize_cols=True):
         train = self.train_full
         dictionary = list()
         for pid in range(len(train)):
             for i in range(train[pid].shape[0]):
-                x = train[pid][i, :, :]
-                if self.embedding is None:
+                x = train[pid][i, :]
+                if self.embedding is None or self.embedding == 'warp':
                     dictionary.append(x.reshape(-1))
                 elif self.embedding == 'scattering':
                     x = torch.from_numpy(x).unsqueeze(0)
@@ -262,12 +280,12 @@ class Trainer(object):
                         x = x.cuda()
                     embed_x = self.scattering(x).cpu().detach().numpy()
                     dictionary.append(embed_x.reshape(-1))
-                elif self.embedding == 'warp':
-                    x = x.reshape(-1)
-                    embed_x = self.warp(x)
-                    dictionary.append(embed_x.reshape(-1))
+                #elif self.embedding == 'warp':
+                #    x = x.reshape(-1)
+                #    embed_x = self.warp(x)
+                #    dictionary.append(embed_x.reshape(-1))
                        
-        dictionary = np.array(dictionary).T
+        dictionary = np.vstack(dictionary).T
         if normalize_cols:
             return normalize(dictionary, axis=0)
         else:
@@ -386,7 +404,7 @@ class Trainer(object):
         out = out.cpu().detach().numpy()
         return out
 
-    def test_lp_attack(self, lp, bx, by, eps, realizable=False, lp_variant=None):
+    def test_lp_attack(self, lp, bx, by, eps, realizable=False, lp_variant=None, only_delta=False):
         bx = torch.from_numpy(bx)
         by = torch.from_numpy(by)
 
@@ -406,14 +424,16 @@ class Trainer(object):
             adv = adv.reshape((adv.shape[0], 1, 28, 28))
             return adv
         else:
-            bsz, channels, r, c = bx.shape[0], bx.shape[1], bx.shape[2], bx.shape[3]
+            multidim = len(bx.shape) == 4
+            if multidim:
+                bsz, channels, r, c = bx.shape[0], bx.shape[1], bx.shape[2], bx.shape[3]
             if not self.use_cnn:
                 bx = bx.flatten(1)
             d = bx.shape[1]
 
-            out = self._lp_attack(lp, eps, bx, by, lp_variant=lp_variant)
+            out = self._lp_attack(lp, eps, bx, by, lp_variant=lp_variant, only_delta=only_delta)
         
-            if not self.use_cnn:
+            if not self.use_cnn and multidim:
                 out = out.reshape((bsz, channels, r, c))
             return out
 
