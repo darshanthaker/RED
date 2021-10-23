@@ -14,6 +14,7 @@ from PIL import Image
 from kymatio.torch import Scattering2D as Scattering
 from kymatio.caching import get_cache_dir
 from kymatio.datasets import get_dataset_dir
+from pdb import set_trace
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -104,6 +105,7 @@ if __name__ == '__main__':
                 generator.zero_grad()
                 batch_images = Variable(current_batch[0]).float().to(device)
                 batch_scattering = scattering(batch_images).squeeze(1)
+                print('batch scattering shape={}'.format(batch_scattering.shape))
                 batch_inverse_scattering = generator(batch_scattering)
                 loss = criterion(batch_inverse_scattering, batch_images)
                 loss.backward()

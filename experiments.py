@@ -195,10 +195,13 @@ def sbsc_test(args):
     np.random.seed(0)
     trainer = Trainer(args, use_maini_cnn=False)
     #trainer.train() 
+    #trainer.train_decoder()
     #set_trace()
     trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset), map_location=torch.device('cpu')))
+    if args.embedding == 'scattering':
+        trainer.decoder.load_state_dict(torch.load('files/decoder_scattering_{}.pth'.format(args.dataset), map_location=torch.device('cpu')))
     test_acc = trainer.evaluate(test=True)
-    print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
+    print("Loaded pretrained model and decoder!. Test accuracy: {}%".format(test_acc))
 
     eps_map = utils.EPS[args.dataset]
     eps = eps_map[args.test_lp]

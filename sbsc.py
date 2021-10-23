@@ -34,6 +34,7 @@ from kymatio.torch import Scattering2D
 from trainer import Trainer
 from irls import BlockSparseIRLSSolver
 from active_set import BlockSparseActiveSetSolver
+from prox_solver import ProxSolver
 from multiprocessing import Pool
 
 def serialize_dictionaries(trainer, args):
@@ -159,12 +160,8 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
             attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack))
 
     np.random.seed(0)
-    raw_Ds = trainer.compute_train_dictionary()
-    if trainer.embedding == 'warp':
-        Ds = trainer.warp(raw_Ds)
-    elif trainer.embedding == 'scattering':
-        Ds = raw_Ds
-    raw_Da = np.hstack(attack_dicts)
+    Ds = trainer.compute_train_dictionary()
+    Da = np.hstack(attack_dicts)
 
     if args.make_realizable:
         test_x = list()
@@ -183,10 +180,6 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         test_idx = np.random.choice(list(range(trainer.N_test)), 100)
         test_x = trainer.test_X[test_idx, :]
         test_y = trainer.test_y[test_idx]
-    #pickle.dump(Ds, open('files/Ds.pkl', 'wb'))
-    #pickle.dump(raw_Da, open('files/raw_Da.pkl', 'wb'))
-    #Ds = pickle.load(open('files/Ds.pkl', 'rb'))
-    #raw_Da = pickle.load(open('files/raw_Da.pkl', 'rb'))
     
     dst = trainer.dataset
     sz = utils.SIZE_MAP[dst]
@@ -195,47 +188,15 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     if test_adv is None:
         test_adv = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant)
         delta = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant, only_delta=True)
-    #real_test_adv = trainer.test_lp_attack(test_lp, test_x, test_y, 0.3, realizable=False, lp_variant=lp_variant)
 
-    ####### MAINI CODE
-    #trainer.load_model('Msd')
-    #test_loader = DataLoader(trainer.test_dataset, batch_size = 100, shuffle=False)
-    #device_id = 0
-    #device = torch.device("cuda:{}".format(device_id) if torch.cuda.is_available() else "cpu")
-    #torch.cuda.set_device(int(device_id))
-    #total_loss, maini_acc, maini_adv = epoch_adversarial(test_loader, None, trainer.net, 0, utils.pgd_linf, device = device, stop = True, restarts = 10, num_iter = 100, epsilon=eps)
-
-    
-    #maini = next(iter(test_loader))
-    #maini_x = maini[0].cuda()
-    #maini_y = maini[1].cuda()
-    #test_adv = trainer.test_lp_attack(test_lp, maini_x, maini_y, eps, realizable=False)
-    #delta = utils.pgd_linf(trainer.net, maini_x, maini_y, restarts=10, num_iter=100, epsilon=eps)
-    #red_adv =  trainer._lp_attack(test_lp, eps, maini_x, maini_y)
-    #maini_adv = maini_adv.cpu().detach().numpy()
-    #maini_y = maini_y.cpu().detach().numpy()
-    ########
-    #bx = trainer.test_X[test_idx, :, :]
-    #set_trace()
     acc = trainer.evaluate(given_examples=(test_adv, test_y))
     print("[L{}, variant={}, eps={}] Adversarial accuracy: {}%".format(test_lp, lp_variant, eps, acc))
-
-    #models = ['L1', 'L2', 'Linf', 'Max', 'Avg', 'Msd', 'Vanilla']
-    #for model in models:
-    #    acc = evaluate_baseline(model, (test_adv, maini_y))
-    #    maini_acc = evaluate_baseline(model, (maini_adv, maini_y))
-    #    print("{}: Defense Accuracy: {}%".format(model, acc))
-    #    print("{}: Maini Defense Accuracy: {}%".format(model, maini_acc))
-    #set_trace()
-    #bacc = baseline(trainer, test_adv[:100, :], test_y[:100])
-    #print("Baseline accuracy: {}%".format(bacc))
-    #return
 
     class_preds = list()
     attack_preds = list()
     denoised = list()
     mismatch = 0
-    num_examples = 100
+    num_examples = 10
     solvers = list()
     xs = list()
     for t in range(num_examples):
@@ -245,69 +206,19 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         corrupted_x = test_adv[t, :]
         ty = torch.from_numpy(np.array(test_y[t:t+1]))
         print("ty = {}, lp = {}".format(ty, test_lp))
-        if args.embedding == 'scattering':
-            cheat_x = torch.from_numpy(test_x[t, :]).unsqueeze(0)
-            tcorrupted_x = torch.from_numpy(corrupted_x).unsqueeze(0)
-            if torch.cuda.is_available():
-                cheat_x = cheat_x.cuda()
-                tcorrupted_x = tcorrupted_x.cuda()
-            traw_x = torch.from_numpy(raw_x[None, :])
-
-            if args.realizable:
-                x_Da = trainer._lp_attack(test_lp, eps, traw_x, ty, only_delta=True)
-                x_Da = x_Da.reshape(-1)
-                raw_Da[:, 2000*toolchain.index(test_lp) + 200*ty + 50] = x_Da
-                Ds[:, 200*ty+50] = trainer.scattering(traw_x).cpu().detach().numpy().reshape(-1)
-
-            start = time.time()
-            try:
-                grad = pickle.load(open('files/jacobians_{}/grad_{}_{}_{}.pkl'.format(args.dataset, test_lp, eps, t), 'rb'))
-            except:
-                #grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, tcorrupted_x, vectorize=True)
-                grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, tcorrupted_x)
-                grad = grad.reshape(-1, trainer.d)
-                pickle.dump(grad, open('files/jacobians_{}/grad_{}_{}_{}.pkl'.format(args.dataset, test_lp, eps, t), 'wb'))
-            try:
-                cheat_grad = pickle.load(open('files/jacobians_{}/cheat_grad_{}.pkl'.format(args.dataset, t), 'rb'))
-            except:
-                #cheat_grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, cheat_x, vectorize=True)
-                cheat_grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, cheat_x)
-                cheat_grad = cheat_grad.reshape(-1, trainer.d)
-                pickle.dump(cheat_grad, open('files/jacobians_{}/cheat_grad_{}.pkl'.format(args.dataset, t), 'wb'))
-            end = time.time()
-            print("jacobian took {} seconds".format(end - start))
-
-            if args.use_cheat_grad:
-                print("USING CHEAT GRAD!")
-                Da = cheat_grad.cpu() @ raw_Da
-            else:
-                Da = grad.cpu() @ raw_Da
-            Da = Da.numpy()
-            Ds = normalize(Ds, axis=0)
-            Da = normalize(Da, axis=0)
-            x = trainer.scattering(tcorrupted_x).cpu().detach().numpy().reshape(-1)
-        elif args.embedding == 'warp':
-            tcorrupted_x = torch.from_numpy(corrupted_x).unsqueeze(0)
-            traw_x = torch.from_numpy(raw_x[None, :])
-            grad = torch.autograd.functional.jacobian(trainer.warp, tcorrupted_x, strict=True)
-            grad = grad.reshape(-1, trainer.d)
-            Da = grad @ raw_Da
-            Ds = normalize(Ds, axis=0)
-            Da = normalize(Da, axis=0)
-            #x = trainer.warp(corrupted_x.reshape(-1)).detach().numpy()
-            x = trainer.warp(corrupted_x.reshape(-1))
-        else:
-            Da = raw_Da
-            Ds = normalize(Ds, axis=0)
-            Da = normalize(Da, axis=0)
-            x = corrupted_x.reshape(-1)
+        Ds = normalize(Ds, axis=0)
+        Da = normalize(Da, axis=0)
+        x = corrupted_x.reshape(-1)
 
         if args.solver == 'irls':
             solver = BlockSparseIRLSSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
                     lambda1=args.lambda1, lambda2=args.lambda2, del_threshold=args.del_threshold)
-        else:
+        elif args.solver == 'active_refined':
             solver = BlockSparseActiveSetSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
                     lambda1=args.lambda1, lambda2=args.lambda2)
+        elif args.solver == 'prox':
+            solver = ProxSolver(Ds, Da, trainer.decoder, trainer.num_classes, num_attacks, 
+                    sz, lambda1=args.lambda1, lambda2=args.lambda2)
         solvers.append(solver)
         xs.append(x)
     #print("Parallelizing over {} CPUs".format(multiprocessing.cpu_count() - 4))
@@ -327,28 +238,18 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
             if i % 5 == 0:
                 print(i)
             results.append(solvers[i].solve(xs[i], alg='Ds+Da'))
-
-            """
-            corrupted_x = real_test_adv[t, :]
-            tcorrupted_x = torch.from_numpy(corrupted_x).unsqueeze(0)
-            if torch.cuda.is_available():
-                tcorrupted_x = tcorrupted_x.cuda()
-            x = trainer.scattering(tcorrupted_x).cpu().detach().numpy().reshape(-1)
-            cs_est, Ds_est, class_pred, dn = results[i]
-            grad = pickle.load(open('files/jacobians_{}/grad_{}_{}.pkl'.format(args.dataset, test_lp, i), 'rb'))
-            set_trace()
-            delta = trainer._lp_attack(test_lp, 0.3, torch.from_numpy(test_x[0:1, :]), torch.from_numpy(test_y[0:1]), only_delta=True)
-            delta = delta.reshape(-1)
-            lhs = x
-            rhs = Ds_est @ cs_est + grad @ delta
-            set_trace()
-            """
         #futs = [p.apply_async(solvers[i].solve, args=([xs[i]])) for i in range(num_examples)]
         #results = [fut.get() for fut in futs]
+    elif args.solver == 'prox':
+        for i in range(num_examples):
+            if i % 5 == 0:
+                print(i)
+            results.append(solvers[i].solve(xs[i]))
     for (res_idx, res) in enumerate(results):
-        cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, dn, err_attack = res
-        pickle.dump(cs_est, open('files/est_nowarp/cs_est_{}.pkl'.format(res_idx), 'wb'))
-        pickle.dump(ca_est, open('files/est_nowarp/ca_est_{}.pkl'.format(res_idx), 'wb'))
+        #cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, dn, err_attack = res
+        cs_est, ca_est, class_pred, attack_pred, dn = res
+        #pickle.dump(cs_est, open('files/est_nowarp/cs_est_{}.pkl'.format(res_idx), 'wb'))
+        #pickle.dump(ca_est, open('files/est_nowarp/ca_est_{}.pkl'.format(res_idx), 'wb'))
         #plt.bar(np.arange(len(cs_est)), cs_est)
         #plt.savefig('cs_est.png')
         #set_trace()

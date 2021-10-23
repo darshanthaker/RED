@@ -66,6 +66,7 @@ def get_parser(parser):
     parser.add_argument('--use_cheat_grad', action='store_true', help='Whether or not to use test example in Jacobian computation')
     parser.add_argument('--realizable', action='store_true', help='Realizable or not')
     parser.add_argument('--make_realizable', action='store_true', help='Make Realizable or not')
+    parser.add_argument('--decoder_num_epochs', default=5, type=int, help='# of training epochs for decoder')
     return parser 
 
 

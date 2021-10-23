@@ -12,8 +12,10 @@ import baselines
 
 from sklearn.preprocessing import normalize
 from neural_net import NN, CNN
+from decoder import Generator
 from pdb import set_trace
 from torchvision import transforms
+from torch.autograd import Variable
 from torch.utils.data import DataLoader, Dataset
 from advertorch.attacks import SparseL1DescentAttack, L2PGDAttack, LinfPGDAttack, CarliniWagnerL2Attack
 
@@ -90,15 +92,45 @@ class Trainer(object):
             self.maini_attack = True
         else:
             self.maini_attack = False
+        self.train_loader, self.test_loader = self.preprocess_data()
         if self.embedding == 'scattering':
-            self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
+            #self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
+            self.scattering = utils.ScatteringTransform(J=2, shape=self.input_shape)
+            self.decoder_num_in_channels = self.scattering(self.train_dataset[0][0]).shape[0]
+            self.decoder_hidden_dim = self.decoder_num_in_channels
+            self.decoder = Generator(self.decoder_num_in_channels, self.decoder_hidden_dim)
         elif self.embedding == 'warp':
             self.warp = Warp(self.d)
-        if torch.cuda.is_available():
-            self.net = self.net.cuda()
+        else:
+            self.decoder = nn.Identity()
+            
         self.loss_fn = nn.CrossEntropyLoss()
         #self.loss_fn = nn.MultiMarginLoss()
-        self.train_loader, self.test_loader = self.preprocess_data()
+        if torch.cuda.is_available():
+            self.net = self.net.cuda()
+            self.decoder = self.decoder.cuda()
+
+    def train_decoder(self):
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        criterion = torch.nn.L1Loss()
+        optimizer = torch.optim.Adam(self.decoder.parameters())
+
+        for idx_epoch in range(self.args.decoder_num_epochs):
+            print('Training epoch {}'.format(idx_epoch))
+            for _, current_batch in enumerate(self.train_loader):
+                self.decoder.zero_grad()
+                batch_images = Variable(current_batch[0]).float().to(device)
+                batch_scattering = self.scattering(batch_images).squeeze(1)
+                if torch.cuda.is_available():
+                    batch_scattering = batch_scattering.cuda()
+                batch_inverse_scattering = self.decoder(batch_scattering)
+                loss = criterion(batch_inverse_scattering, batch_images)
+                loss.backward()
+                optimizer.step()
+        
+        save_path = 'files/decoder_scattering_{}.pth'.format(self.args.dataset)
+        torch.save(self.decoder.state_dict(), save_path)
+        print("Saved decoder model to {}".format(save_path))
 
     def load_model(self, model_name):
         device_id = 0
@@ -280,10 +312,6 @@ class Trainer(object):
                         x = x.cuda()
                     embed_x = self.scattering(x).cpu().detach().numpy()
                     dictionary.append(embed_x.reshape(-1))
-                #elif self.embedding == 'warp':
-                #    x = x.reshape(-1)
-                #    embed_x = self.warp(x)
-                #    dictionary.append(embed_x.reshape(-1))
                        
         dictionary = np.vstack(dictionary).T
         if normalize_cols:
