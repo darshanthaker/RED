@@ -298,12 +298,14 @@ class Trainer(object):
             acc = num_correct / len(data_loader.dataset) * 100.
         return acc
 
-    def compute_train_dictionary(self, normalize_cols=True):
+    def compute_train_dictionary(self, normalize_cols=True, return_raw=False):
         train = self.train_full
         dictionary = list()
+        raw_dict = list()
         for pid in range(len(train)):
             for i in range(train[pid].shape[0]):
                 x = train[pid][i, :]
+                raw_dict.append(x.reshape(-1))
                 if self.embedding is None or self.embedding == 'warp':
                     dictionary.append(x.reshape(-1))
                 elif self.embedding == 'scattering':
@@ -314,10 +316,17 @@ class Trainer(object):
                     dictionary.append(embed_x.reshape(-1))
                        
         dictionary = np.vstack(dictionary).T
+        raw_dict = np.vstack(raw_dict).T
         if normalize_cols:
-            return normalize(dictionary, axis=0)
+            if return_raw:
+                return normalize(dictionary, axis=0), normalize(raw_dict, axis=0)
+            else:
+                return normalize(dictionary, axis=0)
         else:
-            return dictionary
+            if return_raw:
+                return dictionary, raw_dict
+            else:
+                return dictionary
 
     @utils.timing
     def compute_lp_dictionary(self, eps, lp, block=False, net=None, lp_variant=None):

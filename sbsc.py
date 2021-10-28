@@ -160,7 +160,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
             attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack))
 
     np.random.seed(0)
-    Ds = trainer.compute_train_dictionary()
+    Ds, raw_Ds = trainer.compute_train_dictionary(return_raw=True)
     Da = np.hstack(attack_dicts)
 
     if args.make_realizable:
@@ -209,6 +209,8 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         Ds = normalize(Ds, axis=0)
         Da = normalize(Da, axis=0)
         x = corrupted_x.reshape(-1)
+        print("USING RAW X INSTEAD OF CORRUPTED!")
+        x = raw_x.reshape(-1)
 
         if args.solver == 'irls':
             solver = BlockSparseIRLSSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
@@ -244,6 +246,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         for i in range(num_examples):
             if i % 5 == 0:
                 print(i)
+            #set_trace()
             results.append(solvers[i].solve(xs[i]))
     for (res_idx, res) in enumerate(results):
         #cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, dn, err_attack = res

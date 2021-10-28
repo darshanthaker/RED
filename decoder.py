@@ -57,7 +57,7 @@ class Generator(nn.Module):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Regularized inverse scattering')
-    parser.add_argument('--num_epochs', default=2, help='Number of epochs to train')
+    parser.add_argument('--num_epochs', default=5, help='Number of epochs to train')
     parser.add_argument('--load_model', default=False, help='Load a trained model?')
     parser.add_argument('--dir_save_images', default='interpolation_images', help='Dir to save the sequence of images')
     args = parser.parse_args()
@@ -101,15 +101,19 @@ if __name__ == '__main__':
 
         for idx_epoch in range(num_epochs):
             print('Training epoch {}'.format(idx_epoch))
+            sum_loss = 0
+            ct = 0
             for _, current_batch in enumerate(dataloader):
                 generator.zero_grad()
                 batch_images = Variable(current_batch[0]).float().to(device)
                 batch_scattering = scattering(batch_images).squeeze(1)
-                print('batch scattering shape={}'.format(batch_scattering.shape))
                 batch_inverse_scattering = generator(batch_scattering)
                 loss = criterion(batch_inverse_scattering, batch_images)
                 loss.backward()
+                sum_loss += loss.item()
+                ct += 1
                 optimizer.step()
+            print("[{}] Loss: {}".format(idx_epoch, sum_loss / ct))
 
         print('Saving results in {}'.format(dir_to_save))
 
