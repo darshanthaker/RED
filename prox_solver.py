@@ -27,7 +27,7 @@ class ProxSolver(object):
     
     def prox_l2(self, vec, lam):
         vec_norm = np.linalg.norm(vec)
-        if vec_norm > lam:
+        if vec_norm >= lam:
             out = vec - lam* vec / vec_norm
         else:
             out = np.zeros(vec.shape)
@@ -74,15 +74,14 @@ class ProxSolver(object):
         t = 1
         assert beta > 0 and beta < 1
         while True:
-            prox = self.prox_l1_2(c, lam, bi)
-            general_grad = (c - prox) / t
-            _, decoder_out = self.get_decoder_Ds_cs(self.Ds, c) 
-            fitting = 0.5*np.linalg.norm(x - decoder_out)**2
-            suff_decrease = fitting - t*(grad.T @ general_grad) + \
-                    t/2 * np.linalg.norm(general_grad)**2
-            update = self.prox_l1_2(c - t*grad, lam, bi)
-            _, decoder_out = self.get_decoder_Ds_cs(self.Ds, update) 
-            fitting_update = 0.5*np.linalg.norm(x - decoder_out)**2
+            prox_update = self.prox_l1_2(c - t*grad, lam, bi)
+            general_grad = (c - prox_update) / t
+            fitting = 0.5*np.linalg.norm(x - self.get_decoder_Ds_cs(self.Ds, c)[1])**2
+            #suff_decrease = fitting - t*(grad.T @ general_grad) + \
+            #        t/2 * np.linalg.norm(general_grad)**2
+            suff_decrease = fitting - t*(grad.T @ general_grad)
+            fitting_update = 0.5*np.linalg.norm(x - \
+                    self.get_decoder_Ds_cs(self.Ds, prox_update)[1])**2
             if fitting_update <= suff_decrease:
                 break
             else:
