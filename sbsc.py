@@ -150,7 +150,6 @@ def epoch_adversarial(loader, lr_schedule, model, epoch_i, attack, criterion = n
 def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_adv=None):
     toolchain = args.toolchain
     eps_map = utils.EPS[args.dataset]
-    #eps = eps_map[args.test_lp]
 
     attack_dicts = list()
     for attack in toolchain:
@@ -180,6 +179,10 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         test_idx = np.random.choice(list(range(trainer.N_test)), 100)
         test_x = trainer.test_X[test_idx, :]
         test_y = trainer.test_y[test_idx]
+        #print("REALIZABLE CASE!!")
+        #test_idx = np.random.choice(list(range(trainer.N_train)), 100)
+        #test_x = trainer.train_X[test_idx, :]
+        #test_y = trainer.train_y[test_idx]
     
     dst = trainer.dataset
     sz = utils.SIZE_MAP[dst]
@@ -187,7 +190,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     
     if test_adv is None:
         test_adv = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant)
-        delta = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant, only_delta=True)
+        #delta = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant, only_delta=True)
 
     acc = trainer.evaluate(given_examples=(test_adv, test_y))
     print("[L{}, variant={}, eps={}] Adversarial accuracy: {}%".format(test_lp, lp_variant, eps, acc))
@@ -196,7 +199,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     attack_preds = list()
     denoised = list()
     mismatch = 0
-    num_examples = 10
+    num_examples = 5
     solvers = list()
     xs = list()
     for t in range(num_examples):
@@ -209,14 +212,14 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         Ds = normalize(Ds, axis=0)
         Da = normalize(Da, axis=0)
         x = corrupted_x.reshape(-1)
-        print("USING RAW X INSTEAD OF CORRUPTED!")
-        x = raw_x.reshape(-1)
+        #print("USING RAW X INSTEAD OF CORRUPTED!")
+        #x = raw_x.reshape(-1)
 
         if args.solver == 'irls':
             solver = BlockSparseIRLSSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
                     lambda1=args.lambda1, lambda2=args.lambda2, del_threshold=args.del_threshold)
         elif args.solver == 'active_refined':
-            solver = BlockSparseActiveSetSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
+            solver = BlockSparseActiveSetSolver(Ds, Da, trainer.decoder, trainer.num_classes, num_attacks, sz, 
                     lambda1=args.lambda1, lambda2=args.lambda2)
         elif args.solver == 'prox':
             solver = ProxSolver(Ds, Da, trainer.decoder, trainer.num_classes, num_attacks, 
@@ -246,7 +249,24 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         for i in range(num_examples):
             if i % 5 == 0:
                 print(i)
-            #set_trace()
+            """
+            cs_star = np.zeros(Ds.shape[1], dtype=np.float32) 
+            cs_star[:10] = np.random.randn(10)
+            cs_star[200:203] = np.random.randn(3) * 0.1
+            raw_inp = raw_Ds @ cs_star
+            _, decoder_out = solvers[i].get_decoder_Ds_cs(Ds, cs_star)
+            pickle.dump(raw_inp, open('files/decoder/raw_inp_10_3noisy_aug.pkl', 'wb'))
+            pickle.dump(decoder_out, open('files/decoder/decoder_out_10_3noisy_aug.pkl', 'wb'))
+
+            cs_star = np.zeros(Ds.shape[1], dtype=np.float32) 
+            cs_star[:50] = np.random.randn(50)
+            cs_star[200:210] = np.random.randn(10) * 0.1
+            raw_inp = raw_Ds @ cs_star
+            _, decoder_out = solvers[i].get_decoder_Ds_cs(Ds, cs_star)
+            pickle.dump(raw_inp, open('files/decoder/raw_inp_50_10noisy_aug.pkl', 'wb'))
+            pickle.dump(decoder_out, open('files/decoder/decoder_out_50_10noisy_aug.pkl', 'wb'))
+            set_trace()
+            """
             results.append(solvers[i].solve(xs[i]))
     for (res_idx, res) in enumerate(results):
         #cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, dn, err_attack = res

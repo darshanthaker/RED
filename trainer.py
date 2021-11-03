@@ -115,8 +115,52 @@ class Trainer(object):
         criterion = torch.nn.L1Loss()
         optimizer = torch.optim.Adam(self.decoder.parameters())
 
+        """
+        #set_trace()
+        _, raw_Ds = self.compute_train_dictionary(return_raw=True)
+        block_size = utils.SIZE_MAP[self.dataset]
+        # Data augmentation
+        # iterate over all classes
+        # pick 100 random sets of 10 indices to generate linear combinations
+        # pick 100 random sets of 10 indices + 5 indices in some other random class
+        # generate Ds @ cs and add to data
+        data_aug_X = list()
+        data_aug_y = list()
+        for class_idx in range(10):
+            for _ in range(100):
+                idx = np.random.choice(list(range(block_size)), 10) 
+                cs_star = np.zeros(raw_Ds.shape[1], dtype=np.float32)
+                cs_star[block_size*class_idx + idx] = np.random.randn(10)
+                data_aug = raw_Ds @ cs_star
+                data_aug_X.append(data_aug)
+                data_aug_y.append(class_idx)
+            for _ in range(100):
+                idx = np.random.choice(list(range(block_size)), 10) 
+                cs_star = np.zeros(raw_Ds.shape[1], dtype=np.float32)
+                cs_star[block_size*class_idx + idx] = np.random.randn(10)
+                random_class_idx = np.random.choice(list(range(10)), 1)
+                rand_idx = np.random.choice(list(range(block_size)), 5)
+                cs_star[block_size*random_class_idx + rand_idx] = np.random.randn(5) * 0.1
+                data_aug = raw_Ds @ cs_star
+                data_aug_X.append(data_aug)
+                data_aug_y.append(class_idx)
+       
+        data_aug_X = [tmp.reshape((1, 28, 28)) for tmp in data_aug_X] 
+        data_aug_X = np.concatenate(data_aug_X)
+        data_aug_X = np.expand_dims(data_aug_X, axis=1) 
+        dec_train_X = np.vstack([data_aug_X, self.train_X])
+        dec_train_y = np.hstack([data_aug_y, self.train_y]) 
+        dec_train_dataset = utils.YaleDataset(dec_train_X, dec_train_y)
+        dec_train_loader = torch.utils.data.DataLoader(self.train_dataset, batch_size=self.bsz,
+            shuffle=True, worker_init_fn=lambda wid: np.random.seed(np.uint32(torch.initial_seed() + wid)))
+        dec_test_loader = torch.utils.data.DataLoader(self.test_dataset, batch_size=100,
+            shuffle=True, worker_init_fn=lambda wid: np.random.seed(np.uint32(torch.initial_seed() + wid)))
+
+        """
         for idx_epoch in range(self.args.decoder_num_epochs):
             print('Training epoch {}'.format(idx_epoch))
+            ct = 0
+            losses = list()
             for _, current_batch in enumerate(self.train_loader):
                 self.decoder.zero_grad()
                 batch_images = Variable(current_batch[0]).float().to(device)
@@ -126,7 +170,10 @@ class Trainer(object):
                 batch_inverse_scattering = self.decoder(batch_scattering)
                 loss = criterion(batch_inverse_scattering, batch_images)
                 loss.backward()
+                losses.append(loss.item())
+                ct += 1
                 optimizer.step()
+            print("[{}] Loss: {}".format(idx_epoch, np.sum(losses) / ct))
         
         save_path = 'files/decoder_scattering_{}.pth'.format(self.args.dataset)
         torch.save(self.decoder.state_dict(), save_path)
