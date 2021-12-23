@@ -181,8 +181,9 @@ class BlockSparseActiveSetSolver(object):
 
     def get_decoder_Ds_cs(self, Ds, cs_est):
         torch_inp = torch.from_numpy(np.asarray(Ds @ cs_est, dtype=np.float32))
-        torch_inp = torch_inp.reshape((1, 81, 7, 7))
-        #torch_inp = torch_inp.reshape((1, 1, 28, 28))
+        # TODO(dbthaker): Put back first line.
+        #torch_inp = torch_inp.reshape((1, 81, 7, 7))
+        torch_inp = torch_inp.reshape((1, 1, 28, 28))
         if torch.cuda.is_available():
             torch_inp = torch_inp.cuda()
         decoder_out = self.decoder(torch_inp).cpu().detach().numpy().reshape(-1)
@@ -194,12 +195,15 @@ class BlockSparseActiveSetSolver(object):
         for i in range(self.num_classes):
             Ds_i = self.sig_bi.get_block(Ds_est, i)
             cs_i = self.sig_bi.get_block(cs_est, i)
-            torch_inp, _ = self.get_decoder_Ds_cs(Ds_i, cs_i)
-            _, decoder_out = self.get_decoder_Ds_cs(Ds_a, cs_a)
+            #torch_inp, _ = self.get_decoder_Ds_cs(Ds_i, cs_i)
+            # TODO(dbthaker): Double Check.
+            torch_inp, decoder_out = self.get_decoder_Ds_cs(Ds_a, cs_a)
             embed_d = Ds_i.shape[0]
-            decoder_grad = torch.autograd.functional.jacobian(self.decoder, torch_inp, strict=True)
-            decoder_grad = decoder_grad.cpu().detach().numpy().reshape((d, embed_d))
-            val = Ds_i.T @ decoder_grad.T @ (x - decoder_out - Da_a @ ca_a)
+            v = torch.from_numpy((x - decoder_out).reshape((1, 1, 28, 28)))
+            if torch.cuda.is_available():
+                v = v.cuda()
+            _, vjp = torch.autograd.functional.vjp(self.decoder, torch_inp, v=v, strict=True)
+            val = Ds_i.T @ vjp.reshape(-1).cpu().detach().numpy()
             sig_norms[i] = np.linalg.norm(val)
 
         att_norms = np.zeros((self.num_classes, self.num_attacks))
@@ -247,9 +251,9 @@ class BlockSparseActiveSetSolver(object):
             sig_active_set.add(max_sig_idx)
             att_active_set.add(max_att_idx)
 
-            if sig_active_set.issubset(prev_sig_active_set) and att_active_set.issubset(prev_att_active_set):
-                converged = True
-                #break
+            #if sig_active_set.issubset(prev_sig_active_set) and att_active_set.issubset(prev_att_active_set):
+            #    converged = True
+            #    break
 
             print("Sig active set: {}. Att active set: {}".format(sig_active_set, att_active_set))
 
@@ -258,7 +262,7 @@ class BlockSparseActiveSetSolver(object):
             Da_a = self.get_active_blocks(Da_est, self.hier_bi, sig_active_set, hier_active_set=att_active_set)
             prox_solver = ProxSolver(Ds_a, Da_a, self.decoder, len(sig_active_set), len(att_active_set), \
                     self.block_size, lambda1=gamma_s, lambda2=gamma_a) 
-            cs_est_blocks, ca_est_blocks = prox_solver.solve_coef(x)
+            cs_est_blocks, ca_est_blocks, _, _, _ = prox_solver.solve_coef(x)
             active_sig_bi = BlockIndexer(self.block_size, [len(sig_active_set)])
             active_hier_bi = BlockIndexer(self.block_size, [len(sig_active_set), len(att_active_set)])
             for (sig_idx, i) in enumerate(sig_active_set):

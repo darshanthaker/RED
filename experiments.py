@@ -200,6 +200,7 @@ def sbsc_test(args):
     trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset), map_location=torch.device('cpu')))
     if args.embedding == 'scattering':
         trainer.decoder.load_state_dict(torch.load('files/decoder_scattering_{}.pth'.format(args.dataset), map_location=torch.device('cpu')))
+        #trainer.decoder.load_state_dict(torch.load('files/wgan_200_{}_gen.pth'.format(args.dataset), map_location=torch.device('cpu')))
     test_acc = trainer.evaluate(test=True)
     print("Loaded pretrained model and decoder!. Test accuracy: {}%".format(test_acc))
 

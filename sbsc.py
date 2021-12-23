@@ -151,16 +151,25 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     toolchain = args.toolchain
     eps_map = utils.EPS[args.dataset]
 
+    """
     attack_dicts = list()
     for attack in toolchain:
         if use_cnn_for_dict:
             attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack, net='cnn'))
         else:
             attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack))
+    """
 
     np.random.seed(0)
     Ds, raw_Ds = trainer.compute_train_dictionary(return_raw=True)
-    Da = np.hstack(attack_dicts)
+    #Da = np.hstack(attack_dicts)
+    #pickle.dump(Ds, open('files/Ds_mnist_inf.pkl', 'wb')) 
+    #pickle.dump(raw_Ds, open('files/raw_Ds_mnist_inf.pkl', 'wb')) 
+    #pickle.dump(Da, open('files/Da_mnist_inf.pkl', 'wb')) 
+    #np.random.seed(0)
+    #Ds = pickle.load(open('files/Ds_mnist_inf.pkl', 'rb'))
+    #raw_Ds = pickle.load(open('files/raw_Ds_mnist_inf.pkl', 'rb'))
+    Da = pickle.load(open('files/Da_mnist_inf.pkl', 'rb'))
 
     if args.make_realizable:
         test_x = list()
@@ -199,7 +208,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     attack_preds = list()
     denoised = list()
     mismatch = 0
-    num_examples = 5
+    num_examples = 100
     solvers = list()
     xs = list()
     for t in range(num_examples):
@@ -246,28 +255,31 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         #futs = [p.apply_async(solvers[i].solve, args=([xs[i]])) for i in range(num_examples)]
         #results = [fut.get() for fut in futs]
     elif args.solver == 'prox':
+        if args.embedding is None:
+            eta_s = 1.0 / np.linalg.norm(Ds @ Ds.T, ord=2)
+        else:
+            eta_s = None
+        #eta_a = 1.0 / np.linalg.norm(Da @ Da.T, ord=2)
+        eta_a = None
+        print("Lambda_s: {}. Lambda_a: {}".format(args.lambda1, args.lambda2))
         for i in range(num_examples):
             if i % 5 == 0:
                 print(i)
-            """
-            cs_star = np.zeros(Ds.shape[1], dtype=np.float32) 
-            cs_star[:10] = np.random.randn(10)
-            cs_star[200:203] = np.random.randn(3) * 0.1
-            raw_inp = raw_Ds @ cs_star
-            _, decoder_out = solvers[i].get_decoder_Ds_cs(Ds, cs_star)
-            pickle.dump(raw_inp, open('files/decoder/raw_inp_10_3noisy_aug.pkl', 'wb'))
-            pickle.dump(decoder_out, open('files/decoder/decoder_out_10_3noisy_aug.pkl', 'wb'))
-
-            cs_star = np.zeros(Ds.shape[1], dtype=np.float32) 
-            cs_star[:50] = np.random.randn(50)
-            cs_star[200:210] = np.random.randn(10) * 0.1
-            raw_inp = raw_Ds @ cs_star
-            _, decoder_out = solvers[i].get_decoder_Ds_cs(Ds, cs_star)
-            pickle.dump(raw_inp, open('files/decoder/raw_inp_50_10noisy_aug.pkl', 'wb'))
-            pickle.dump(decoder_out, open('files/decoder/decoder_out_50_10noisy_aug.pkl', 'wb'))
-            set_trace()
-            """
-            results.append(solvers[i].solve(xs[i]))
+            if test_lp == float("inf"):
+                str_lp = "inf"
+            else:
+                str_lp = str(int(test_lp))
+            if not os.path.exists('decoder_outs_adv_l{}/{}'.format(str_lp, i)):
+                os.mkdir('decoder_outs_adv_l{}/{}'.format(str_lp, i))
+            else:
+                os.system('rm -rf decoder_outs_adv_l{}/{}'.format(str_lp, i))
+                #os.rmdir('decoder_outs_adv_l{}/{}'.format(str_lp, i))
+                os.mkdir('decoder_outs_adv_l{}/{}'.format(str_lp, i))
+            #results.append(solvers[i].solve(xs[i], eta_s=eta_s, eta_a=eta_a, cheat_y=test_y[i], dir_name='decoder_outs_cheat/{}'.format(i)))
+            results.append(solvers[i].solve(xs[i], eta_s=eta_s, eta_a=eta_a, dir_name='decoder_outs_adv_l{}/{}'.format(str_lp, i)))
+        #futs = [p.apply_async(solvers[i].solve(xs[i], eta_s=eta_s, eta_a=eta_a)) for i in range(num_examples)]
+        #results = [fut.get() for fut in futs]
+            #print("GROUND TRUTH LABEL: {}".format(test_y[i]))
     for (res_idx, res) in enumerate(results):
         #cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, dn, err_attack = res
         cs_est, ca_est, class_pred, attack_pred, dn = res

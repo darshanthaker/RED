@@ -1,4 +1,5 @@
-# prerequisites
+#prerequisites
+# Taken from https://github.com/eriklindernoren/PyTorch-GAN/blob/master/implementations/wgan/wgan.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,13 +11,22 @@ from torchvision import datasets, transforms
 from torch.autograd import Variable
 from torchvision.utils import save_image
 from block_indexer import BlockIndexer
+from torch.utils.data import Subset
 from pdb import set_trace
 
 # Device configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-bs = 100
+cuda = torch.cuda.is_available()
+LongTensor = torch.cuda.LongTensor if cuda else torch.LongTensor
+
+bs = 64
 block_size = 200
+img_shape = (1, 28, 28)
+z_dim = 3969
+N_CLASSES = 10
+#z_dim = 100
+
 # MNIST Dataset
 transform = transforms.Compose([
     transforms.ToTensor(),
@@ -24,6 +34,9 @@ transform = transforms.Compose([
 
 train_dataset = datasets.MNIST(root='./mnist_data/', train=True, transform=transform, download=True)
 test_dataset = datasets.MNIST(root='./mnist_data/', train=False, transform=transform, download=False)
+#idx = train_dataset.train_labels==0
+#train_dataset.targets = train_dataset.targets[idx]
+#train_dataset.data = train_dataset.data[idx]
 Ds = pickle.load(open('files/Ds_mnist_inf.pkl', 'rb'))
 sig_bi = BlockIndexer(block_size, [10])
 
@@ -32,119 +45,178 @@ train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=bs,
 test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=bs, shuffle=False)
 
 class Generator(nn.Module):
-    def __init__(self, g_input_dim, g_output_dim):
-        super(Generator, self).__init__()       
-        self.fc1 = nn.Linear(g_input_dim, 256)
-        self.fc2 = nn.Linear(self.fc1.out_features, self.fc1.out_features*2)
-        self.fc3 = nn.Linear(self.fc2.out_features, self.fc2.out_features*2)
-        self.fc4 = nn.Linear(self.fc3.out_features, g_output_dim)
-    
-    # forward method
-    def forward(self, x): 
-        x = F.leaky_relu(self.fc1(x), 0.2)
-        x = F.leaky_relu(self.fc2(x), 0.2)
-        x = F.leaky_relu(self.fc3(x), 0.2)
-        return torch.tanh(self.fc4(x))
-    
+    def __init__(self):
+        super(Generator, self).__init__()
+        #self.label_embedding = nn.Embedding(N_CLASSES, N_CLASSES)
+
+        def block(in_feat, out_feat, normalize=True):
+            layers = [nn.Linear(in_feat, out_feat)]
+            if normalize:
+                layers.append(nn.BatchNorm1d(out_feat, 0.8))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            return layers
+
+        self.model = nn.Sequential(
+            *block(z_dim, 128, normalize=False),
+            *block(128, 256),
+            *block(256, 512),
+            *block(512, 1024),
+            nn.Linear(1024, int(np.prod(img_shape))),
+            nn.Tanh()
+        )
+
+    def forward(self, z, labels):
+        #z_in = torch.cat((z.view(z.size(0), -1), self.label_embedding(labels)), -1)
+        z_in = z
+        img = self.model(z_in)
+        img = img.view(img.shape[0], *img_shape)
+        return img
+
+
 class Discriminator(nn.Module):
-    def __init__(self, d_input_dim):
+    def __init__(self):
         super(Discriminator, self).__init__()
-        self.fc1 = nn.Linear(d_input_dim, 1024)
-        self.fc2 = nn.Linear(self.fc1.out_features, self.fc1.out_features//2)
-        self.fc3 = nn.Linear(self.fc2.out_features, self.fc2.out_features//2)
-        self.fc4 = nn.Linear(self.fc3.out_features, 1)
-    
-    # forward method
-    def forward(self, x):
-        x = F.leaky_relu(self.fc1(x), 0.2)
-        x = F.dropout(x, 0.3)
-        x = F.leaky_relu(self.fc2(x), 0.2)
-        x = F.dropout(x, 0.3)
-        x = F.leaky_relu(self.fc3(x), 0.2)
-        x = F.dropout(x, 0.3)
-        return torch.sigmoid(self.fc4(x))
-# build network
-z_dim = 3969
-mnist_dim = train_dataset.train_data.size(1) * train_dataset.train_data.size(2)
 
-G = Generator(g_input_dim = z_dim, g_output_dim = mnist_dim).to(device)
-D = Discriminator(mnist_dim).to(device)
+        self.label_embedding = nn.Embedding(N_CLASSES, N_CLASSES)
 
-# loss
-criterion = nn.BCELoss() 
+        self.model = nn.Sequential(
+            nn.Linear(N_CLASSES + int(np.prod(img_shape)), 512),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(512, 256),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(256, 1),
+        )
 
-# optimizer
-lr = 0.00002 
-G_optimizer = optim.Adam(G.parameters(), lr = lr)
-D_optimizer = optim.Adam(D.parameters(), lr = lr)
+    def forward(self, img, labels):
+        d_in = torch.cat((img.view(img.size(0), -1), self.label_embedding(labels)), -1)
+        #img_flat = img.view(img.shape[0], -1)
+        validity = self.model(d_in)
+        return validity
 
 def sample_z(x_lab):
     n = Ds.shape[1]
     z = list()
-    for i in range(bs):
+    for i in range(x_lab.shape[0]):
         cs = np.zeros(n, dtype=np.float32)
-        cs_i = np.zeros(block_size, dtype=np.float32)
-        cs_i[np.random.randint(block_size)] = 1.0
-        #cs = sig_bi.set_block(cs, x_lab[i].numpy(), np.random.normal(block_size))
-        cs = sig_bi.set_block(cs, x_lab[i].numpy(), cs_i)
+        cs_i = np.random.laplace(size=block_size)
+        #cs_i = np.zeros(block_size, dtype=np.float32)
+        #cs_i[np.random.randint(block_size)] = 1.0
+        try:
+            cs = sig_bi.set_block(cs, x_lab[i].numpy(), cs_i)
+        except:
+            set_trace()
         z_i = Ds @ cs
         z.append(z_i)
     z = np.vstack(z)
     z = Variable(torch.from_numpy(z).to(device))
     return z
 
-def D_train(x, x_lab):
-    #=======================Train the discriminator=======================#
-    D.zero_grad()
+def main():
+    # build network
+    #mnist_dim = train_dataset.train_data.size(1) * train_dataset.train_data.size(2)
+    mnist_dim = 784
+    # Initialize generator and discriminator
+    generator = Generator()
+    discriminator = Discriminator()
 
-    # train discriminator on real
-    x_real, y_real = x.view(-1, mnist_dim), torch.ones(bs, 1)
-    x_real, y_real = Variable(x_real.to(device)), Variable(y_real.to(device))
+    if cuda:
+        generator.cuda()
+        discriminator.cuda()
 
-    D_output = D(x_real)
-    D_real_loss = criterion(D_output, y_real)
-    D_real_score = D_output
+    lr = 0.00005
+    n_epochs = 200
+    clip_value = 0.01
+    n_critic = 5
+    sample_interval = 1000
+    # Optimizers
+    optimizer_G = torch.optim.RMSprop(generator.parameters(), lr=lr)
+    optimizer_D = torch.optim.RMSprop(discriminator.parameters(), lr=lr)
 
-    # train discriminator on fake
-    z = sample_z(x_lab)
-    x_fake, y_fake = G(z), Variable(torch.zeros(bs, 1).to(device))
+    Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
-    D_output = D(x_fake)
-    D_fake_loss = criterion(D_output, y_fake)
-    D_fake_score = D_output
+    # ----------
+    #  Training
+    # ----------
 
-    # gradient backprop & optimize ONLY D's parameters
-    D_loss = D_real_loss + D_fake_loss
-    D_loss.backward()
-    D_optimizer.step()
-        
-    return  D_loss.data.item()
+    batches_done = 0
+    for epoch in range(n_epochs):
 
-def G_train(x, x_lab):
-    #=======================Train the generator=======================#
-    G.zero_grad()
+        for i, (imgs, img_labs) in enumerate(train_loader):
 
-    z = sample_z(x_lab)
-    y = Variable(torch.ones(bs, 1).to(device))
+            #print(img_labs)
+            # Configure input
+            real_imgs = Variable(imgs.type(Tensor))
 
-    G_output = G(z)
-    D_output = D(G_output)
-    G_loss = criterion(D_output, y)
+            # ---------------------
+            #  Train Discriminator
+            # ---------------------
 
-    # gradient backprop & optimize ONLY G's parameters
-    G_loss.backward()
-    G_optimizer.step()
-        
-    return G_loss.data.item()
+            optimizer_D.zero_grad()
 
-n_epoch = 10
-for epoch in range(1, n_epoch+1):           
-    D_losses, G_losses = [], []
-    for batch_idx, (x, x_lab) in enumerate(train_loader):
-        D_losses.append(D_train(x, x_lab))
-        G_losses.append(G_train(x, x_lab))
+            # Sample noise as generator input
+            z = sample_z(img_labs)
+            #z = Variable(Tensor(np.random.normal(0, 1, (imgs.shape[0], z_dim))))
+            gen_labels = Variable(LongTensor(np.random.randint(0, N_CLASSES, img_labs.shape[0])))
+            # Generate a batch of images
+            fake_imgs = generator(z, gen_labels).detach()
 
-    print('[%d/%d]: loss_d: %.3f, loss_g: %.3f' % (
-            (epoch), n_epoch, torch.mean(torch.FloatTensor(D_losses)), torch.mean(torch.FloatTensor(G_losses))))
+            if cuda:
+                img_labs = img_labs.cuda()
+            # Adversarial loss
+            loss_D = -torch.mean(discriminator(real_imgs, img_labs)) + torch.mean(discriminator(fake_imgs, gen_labels))
 
-set_trace()
+            loss_D.backward()
+            optimizer_D.step()
+
+            # Clip weights of discriminator
+            for p in discriminator.parameters():
+                p.data.clamp_(-clip_value, clip_value)
+
+            # Train the generator every n_critic iterations
+            if i % n_critic == 0:
+
+                # -----------------
+                #  Train Generator
+                # -----------------
+
+                optimizer_G.zero_grad()
+
+                # Generate a batch of images
+                gen_imgs = generator(z, gen_labels)
+                if cuda:
+                    gen_labels = gen_labels.cuda()
+                # Adversarial loss
+                loss_G = -torch.mean(discriminator(gen_imgs, gen_labels))
+
+                loss_G.backward()
+                optimizer_G.step()
+
+                print(
+                    "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
+                    % (epoch, n_epochs, batches_done % len(train_loader), len(train_loader), loss_D.item(), loss_G.item())
+                )
+
+            if batches_done % sample_interval == 0:
+                save_image(gen_imgs.data[:25], "wgan_gen/scatter_images/%d.png" % batches_done, nrow=5, normalize=True)
+            batches_done += 1
+
+
+    gen_save_path = 'files/cwganfull_200_mnist_gen.pth'
+    discrim_save_path = 'files/cwganfull_200_mnist_discrim.pth'
+    torch.save(generator.state_dict(), gen_save_path)
+    torch.save(discriminator.state_dict(), discrim_save_path)
+    print("Saved generator + discriminator to {}".format(gen_save_path))
+
+def test():
+    decoder = Generator()
+    decoder.load_state_dict(torch.load('files/cwgan_200_mnist_gen.pth', map_location=torch.device('cpu')))
+    decoder.cuda()
+    img_labs = torch.from_numpy(np.array([0 for i in range(25)]))
+    z = sample_z(img_labs)
+    gen_imgs = decoder(z, None).detach()
+    set_trace()
+    save_image(gen_imgs.data[:25], "wgan_gen/scatter_images/c0_images1sparse.png", nrow=5, normalize=True)
+
+if __name__=='__main__':
+    #main()
+    test()
