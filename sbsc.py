@@ -164,6 +164,8 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         Ds = trainer.warp(raw_Ds)
     elif trainer.embedding == 'scattering':
         Ds = raw_Ds
+    else:
+        Ds = raw_Ds
     raw_Da = np.hstack(attack_dicts)
 
     if args.make_realizable:
