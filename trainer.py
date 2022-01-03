@@ -114,8 +114,8 @@ class Trainer(object):
 
     def train_decoder(self):
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        #criterion = torch.nn.L1Loss()
-        criterion = torch.nn.L2Loss()
+        criterion = torch.nn.L1Loss()
+        #criterion = torch.nn.L2Loss()
         optimizer = torch.optim.Adam(self.decoder.parameters())
 
         """
@@ -161,7 +161,7 @@ class Trainer(object):
 
         """
         for idx_epoch in range(self.args.decoder_num_epochs):
-            print('Training epoch {}'.format(idx_epoch))
+            #print('Training epoch {}'.format(idx_epoch))
             ct = 0
             losses = list()
             for _, current_batch in enumerate(self.train_loader):
@@ -178,7 +178,7 @@ class Trainer(object):
                 optimizer.step()
             print("[{}] Loss: {}".format(idx_epoch, np.sum(losses) / ct))
         
-        save_path = 'files/decoder_scattering_{}_TMP.pth'.format(self.args.dataset)
+        save_path = 'files/decoder_scattering_{}.pth'.format(self.args.dataset)
         torch.save(self.decoder.state_dict(), save_path)
         print("Saved decoder model to {}".format(save_path))
 

@@ -161,14 +161,14 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     """
 
     np.random.seed(0)
-    Ds, raw_Ds = trainer.compute_train_dictionary(return_raw=True)
+    #Ds, raw_Ds = trainer.compute_train_dictionary(return_raw=True)
     #Da = np.hstack(attack_dicts)
     #pickle.dump(Ds, open('files/Ds_mnist_inf.pkl', 'wb')) 
     #pickle.dump(raw_Ds, open('files/raw_Ds_mnist_inf.pkl', 'wb')) 
     #pickle.dump(Da, open('files/Da_mnist_inf.pkl', 'wb')) 
     #np.random.seed(0)
-    #Ds = pickle.load(open('files/Ds_mnist_inf.pkl', 'rb'))
-    #raw_Ds = pickle.load(open('files/raw_Ds_mnist_inf.pkl', 'rb'))
+    Ds = pickle.load(open('files/Ds_mnist_inf.pkl', 'rb'))
+    raw_Ds = pickle.load(open('files/raw_Ds_mnist_inf.pkl', 'rb'))
     Da = pickle.load(open('files/Da_mnist_inf.pkl', 'rb'))
 
     if args.make_realizable:
@@ -208,7 +208,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     attack_preds = list()
     denoised = list()
     mismatch = 0
-    num_examples = 100
+    num_examples = 10
     solvers = list()
     xs = list()
     for t in range(num_examples):

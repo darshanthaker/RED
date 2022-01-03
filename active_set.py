@@ -181,9 +181,9 @@ class BlockSparseActiveSetSolver(object):
 
     def get_decoder_Ds_cs(self, Ds, cs_est):
         torch_inp = torch.from_numpy(np.asarray(Ds @ cs_est, dtype=np.float32))
-        # TODO(dbthaker): Put back first line.
-        #torch_inp = torch_inp.reshape((1, 81, 7, 7))
-        torch_inp = torch_inp.reshape((1, 1, 28, 28))
+        # TODO(dbthaker): Put back first line. - DONE.
+        torch_inp = torch_inp.reshape((1, 81, 7, 7))
+        #torch_inp = torch_inp.reshape((1, 1, 28, 28))
         if torch.cuda.is_available():
             torch_inp = torch_inp.cuda()
         decoder_out = self.decoder(torch_inp).cpu().detach().numpy().reshape(-1)
@@ -241,15 +241,16 @@ class BlockSparseActiveSetSolver(object):
 
             sorted_sig_norms = np.sort(sig_norms)[::-1]
             sorted_att_norms = np.sort(att_norms.reshape(-1))[::-1]
-            gamma_s = (sorted_sig_norms[0] + sorted_sig_norms[1]) / 2
-            gamma_a = (sorted_att_norms[0] + sorted_att_norms[1]) / 2
-            #gamma_s = sorted_sig_norms[0]
-            #gamma_a = sorted_att_norms[0]
+            #gamma_s = (sorted_sig_norms[0] + sorted_sig_norms[1]) / 2
+            #gamma_a = (sorted_att_norms[0] + sorted_att_norms[1]) / 2
+            gamma_s = sorted_sig_norms[0] / 3
+            gamma_a = sorted_att_norms[0] / 3
             print("gamma_s: {}. gamma_a: {}".format(gamma_s, gamma_a))
             max_sig_idx  = np.argmax(sig_norms)
             max_att_idx = np.unravel_index(np.argmax(att_norms), att_norms.shape)[1]
             sig_active_set.add(max_sig_idx)
             att_active_set.add(max_att_idx)
+            set_trace()
 
             #if sig_active_set.issubset(prev_sig_active_set) and att_active_set.issubset(prev_att_active_set):
             #    converged = True

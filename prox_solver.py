@@ -21,6 +21,7 @@ class ProxSolver(object):
         self.lambda2 = lambda2
         self.decoder = decoder
 
+        print("Num classes: {}. Num attacks: {}".format(self.num_classes, self.num_attacks))
         self.hier_bi = BlockIndexer(self.block_size, [self.num_classes, self.num_attacks])
         self.sig_bi = BlockIndexer(self.block_size, [self.num_classes])
 
@@ -171,7 +172,22 @@ class ProxSolver(object):
             grad_cs_fitting = - Ds_i.T @ vjp.reshape(-1).cpu().detach().numpy()
             grad_norms.append(np.linalg.norm(grad_cs_fitting))
         print(grad_norms)
-        set_trace()
+        return grad_norms
+
+    def find_lam2(self, x):
+        cs_zero = np.zeros(self.Ds.shape[1], dtype=np.float32)
+        ca_zero = np.zeros(self.Da.shape[1], dtype=np.float32)
+        grad_norms = list()
+        _, decoder_out = self.get_decoder_Ds_cs(self.Ds, cs_zero)
+        v = x - decoder_out
+        for i in range(self.hier_bi.num_blocks[0]):
+            for j in range(self.hier_bi.num_blocks[1]):
+                Da_ij = self.hier_bi.get_block(self.Da, (i, j)) 
+                ca_ij = self.hier_bi.get_block(ca_zero, (i, j))
+                grad_ca_fitting = -Da_ij.T @ v
+                grad_norms.append(np.linalg.norm(grad_ca_fitting))
+        print(grad_norms)
+        return grad_norms
 
     def solve_coef(self, x, accelerated=True, eta_s=None, eta_a=None, cheat_y=None, dir_name=None):
         embed_d = self.Ds.shape[0]
@@ -188,6 +204,8 @@ class ProxSolver(object):
         #eta_s = 0.003
         #beta_s = 0.9
         #eta_s = 0.002
+        lip_s = 76594
+        lip_a = 2092
         if eta_s is None:
             eta_s = 1.0 / 76594
             #eta_s = 1.0 / 1000
@@ -197,7 +215,17 @@ class ProxSolver(object):
             eta_a = 1.0 / 76594
         print("eta_s: {}. eta_a: {}".format(eta_s, eta_a))
 
-        #lam1 = self.find_lam1(x)
+        sig_norms = self.find_lam1(x)
+        att_norms = self.find_lam2(x)
+        sig_norms = np.sort(sig_norms)[::-1]
+        att_norms = np.sort(att_norms)[::-1]
+        print("lambda1 theoretical: {}. lambda2 theoretical: {}".format(sig_norms[0], att_norms[0]))
+        #self.lambda1 = (sig_norms[0] + sig_norms[1]) / 2
+        #self.lambda2 = (att_norms[0] + att_norms[1]) /  2
+        self.lambda1 = sig_norms[0] / 4
+        #self.lambda1 = sig_norms[0] / 1.5
+        #self.lambda2 = att_norms[0] / 30
+        print("lambda1: {}. lambda2: {}".format(self.lambda1, self.lambda2))
         T = 500
         cs_est_prev = cs_est
         ca_est_prev = ca_est
@@ -239,8 +267,8 @@ class ProxSolver(object):
             else:
                 cs_est_t1 = cs_est
             torch_inp, decoder_out = self.get_decoder_Ds_cs(self.Ds, cs_est_t1)
-            print("norm g(phi ds cs): {}".format(np.linalg.norm(decoder_out)))
-            print("norm da ca: {}".format(np.linalg.norm(self.Da @ ca_est)))
+            #print("norm g(phi ds cs): {}".format(np.linalg.norm(decoder_out)))
+            #print("norm da ca: {}".format(np.linalg.norm(self.Da @ ca_est)))
             decoder_outs.append(decoder_out.reshape((1, 28, 28)))
             v = (x - decoder_out - self.Da @ ca_est).reshape((1, 1, 28, 28))
             #v = (x - decoder_out).reshape((1, 1, 28, 28))
@@ -264,7 +292,7 @@ class ProxSolver(object):
             _, vjp = torch.autograd.functional.vjp(self.decoder, torch_inp, v=v, strict=True)
             grad_cs_fitting = - self.Ds.T @ vjp.reshape(-1).cpu().detach().numpy()
             cs_est = cs_est_t1 - eta_s * grad_cs_fitting
-            cs_est = self.prox_l1_2(cs_est, self.lambda1, self.sig_bi)
+            cs_est = self.prox_l1_2(cs_est, self.lambda1 / lip_s, self.sig_bi)
 
             if accelerated:
                 ca_est_t1 = ca_est + (t - 1) / float(t + 2) * (ca_est - ca_est_prev)
@@ -274,7 +302,7 @@ class ProxSolver(object):
             torch_inp, decoder_out = self.get_decoder_Ds_cs(self.Ds, cs_est)
             grad_ca_fitting = - self.Da.T @ (x - decoder_out - self.Da @ ca_est_t1)
             ca_est = ca_est_t1 - eta_a * grad_ca_fitting
-            ca_est = self.prox_l1_2(ca_est, self.lambda2, self.hier_bi)
+            ca_est = self.prox_l1_2(ca_est, self.lambda2 / lip_a, self.hier_bi)
 
             convergence = np.linalg.norm(self.Ds@cs_est - self.Ds@cs_est_t1) / np.linalg.norm(self.Ds@cs_est_t1)
             #print(convergence)
