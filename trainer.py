@@ -9,11 +9,16 @@ import torch.nn as nn
 import utils
 import copy
 import baselines
+import lpips
 
 from sklearn.preprocessing import normalize
+from sklearn.decomposition import PCA
 from neural_net import NN, CNN
-from decoder import Generator
-#from dcgan import Generator
+from densenet import densenet121
+from wideresnet import WideResNet
+from decoder import Generator, WGANGenerator
+from studiogan_decoder import StudioGenerator
+from dcgan import DCGenerator
 from pdb import set_trace
 from torchvision import transforms
 from torch.autograd import Variable
@@ -47,10 +52,10 @@ class Warp(nn.Module):
 
 class Trainer(object):
 
-    def __init__(self, args, use_maini_cnn=False):
+    def __init__(self, args, use_maini_cnn=False, use_pca=False):
         self.args = args
         self.arch = self.args.arch
-        self.use_cnn = 'cnn' in self.arch
+        self.use_cnn = 'cnn' in self.arch or self.arch == 'densenet' or self.arch == 'wresnet' or self.arch == 'alexnet'
         self.bsz = self.args.bsz
         self.dataset = self.args.dataset
         self.eps_map = utils.EPS[self.dataset]
@@ -71,21 +76,44 @@ class Trainer(object):
             #else:
             #    self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
         elif self.dataset == 'mnist':
-            self.input_shape= (28, 28)
+            self.input_shape = (28, 28)
             self.d = 28*28
             self.num_classes = 10
             #if self.embedding is None:
             self.in_channels = 1
             #else:
             #    self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
+        elif self.dataset == 'fashionmnist':
+            self.input_shape = (28, 28)
+            self.d = 28*28
+            self.num_classes = 10
+            self.in_channels = 1
         elif self.dataset == 'synthetic':
             self.d = 300
             self.input_shape = ()
             self.num_classes = 2
-        if self.use_cnn:
+        elif self.dataset == 'tiny_imagenet':
+            self.d = 64*64*3
+            self.input_shape = (64, 64)
+            self.num_classes = 200
+            self.in_channels = 3
+        elif self.dataset == 'imagenet':
+            self.d = 256*256*3
+            self.input_shape = (256, 256)
+            self.num_classes = 1000
+            self.in_channels = 3
+
+        if self.use_cnn and self.arch != 'densenet' and self.arch != 'wresnet' and self.arch != 'alexnet':
             d_arch = '{}_{}'.format(self.arch, self.dataset)
             self.net = CNN(arch=d_arch, embedding=self.embedding, in_channels=self.in_channels,
                 num_classes=self.num_classes)
+        elif self.arch == 'densenet':
+            self.net = torch.hub.load("chenyaofo/pytorch-cifar-models", "cifar10_resnet20", pretrained=True) 
+        elif self.arch == 'wresnet':
+            self.net = WideResNet(28, 10, 10)
+            self.net.eval()
+        elif self.arch == 'alexnet':
+            self.net = torchvision.models.alexnet(num_classes=self.num_classes)
         else:
             self.net = NN(self.d, 256, self.num_classes, linear=False) 
         if use_maini_cnn:
@@ -93,81 +121,89 @@ class Trainer(object):
             self.maini_attack = True
         else:
             self.maini_attack = False
-        self.train_loader, self.test_loader = self.preprocess_data()
         if self.embedding == 'scattering':
             #self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
             self.scattering = utils.ScatteringTransform(J=2, shape=self.input_shape)
-            self.decoder_num_in_channels = self.scattering(self.train_dataset[0][0]).shape[0]
+            if use_pca:
+                self.decoder_num_in_channels = 10
+            else:
+                self.decoder_num_in_channels = self.scattering(self.train_dataset[0][0]).shape[0]
             self.decoder_hidden_dim = self.decoder_num_in_channels
-            self.decoder = Generator(self.decoder_num_in_channels, self.decoder_hidden_dim)
-            #self.decoder = Generator()
+            self.decoder = Generator(self.decoder_num_in_channels, self.decoder_hidden_dim, num_output_channels=self.in_channels)
+            self.pca = PCA(n_components=490)
         elif self.embedding == 'warp':
             self.warp = Warp(self.d)
+        elif self.embedding == 'gan':
+            self.decoder = DCGenerator(1, nc=self.in_channels)
+            #self.encoder = NN(self.d, 256, 100, linear=False) 
+            self.encoder = nn.Identity()
+        elif self.embedding == 'studiogan':
+            self.decoder = StudioGenerator(128, 32, 64)
+            self.encoder = nn.Identity()
+        elif self.embedding == 'wgan':
+            self.decoder = WGANGenerator(input_dim=62, input_size=28)
+            self.encoder = nn.Identity()
         else:
             self.decoder = nn.Identity()
-            
+            self.encoder = nn.Identity()
+
+        self.train_loader, self.test_loader = self.preprocess_data()
         self.loss_fn = nn.CrossEntropyLoss()
         #self.loss_fn = nn.MultiMarginLoss()
         if torch.cuda.is_available():
             self.net = self.net.cuda()
+            self.encoder = self.encoder.cuda()
             self.decoder = self.decoder.cuda()
 
-    def train_decoder(self):
+    def train_encoder(self):
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        #criterion = lpips.LPIPS(net='vgg').to(device)
         #criterion = torch.nn.L1Loss()
-        criterion = torch.nn.L2Loss()
+        criterion = torch.nn.MSELoss()
+        #optimizer = torch.optim.SGD(self.encoder.parameters(), lr=0.1, momentum=0.7)
+        optimizer = torch.optim.Adam(self.encoder.parameters())
+
+        self.decoder.eval()
+        for idx_epoch in range(self.args.encoder_num_epochs):
+            ct = 1
+            losses = list()
+            for _, current_batch in enumerate(self.train_loader):
+                optimizer.zero_grad()
+                batch_images = Variable(current_batch[0]).float().to(device)
+                batch_encoded = self.encoder(batch_images.flatten(1)).unsqueeze(2).unsqueeze(3)
+                batch_recon = self.decoder(batch_encoded)
+                #loss = torch.mean(criterion(batch_recon, batch_images))
+                loss = criterion(batch_recon, batch_images)
+                loss.backward()
+                losses.append(loss.item())
+                ct += 1
+                optimizer.step()
+            print("[{}] Loss: {}".format(idx_epoch, np.sum(losses) / ct))
+        save_path = 'files/pretrained_encoder_{}_{}.pth'.format(self.arch, self.dataset)
+        torch.save(self.encoder.state_dict(), save_path)
+
+    def train_decoder(self, use_pca=False):
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        criterion = torch.nn.L1Loss()
+        #criterion = torch.nn.L2Loss()
         optimizer = torch.optim.Adam(self.decoder.parameters())
 
-        """
-        #set_trace()
-        _, raw_Ds = self.compute_train_dictionary(return_raw=True)
-        block_size = utils.SIZE_MAP[self.dataset]
-        # Data augmentation
-        # iterate over all classes
-        # pick 100 random sets of 10 indices to generate linear combinations
-        # pick 100 random sets of 10 indices + 5 indices in some other random class
-        # generate Ds @ cs and add to data
-        data_aug_X = list()
-        data_aug_y = list()
-        for class_idx in range(10):
-            for _ in range(100):
-                idx = np.random.choice(list(range(block_size)), 10) 
-                cs_star = np.zeros(raw_Ds.shape[1], dtype=np.float32)
-                cs_star[block_size*class_idx + idx] = np.random.randn(10)
-                data_aug = raw_Ds @ cs_star
-                data_aug_X.append(data_aug)
-                data_aug_y.append(class_idx)
-            for _ in range(100):
-                idx = np.random.choice(list(range(block_size)), 10) 
-                cs_star = np.zeros(raw_Ds.shape[1], dtype=np.float32)
-                cs_star[block_size*class_idx + idx] = np.random.randn(10)
-                random_class_idx = np.random.choice(list(range(10)), 1)
-                rand_idx = np.random.choice(list(range(block_size)), 5)
-                cs_star[block_size*random_class_idx + rand_idx] = np.random.randn(5) * 0.1
-                data_aug = raw_Ds @ cs_star
-                data_aug_X.append(data_aug)
-                data_aug_y.append(class_idx)
-       
-        data_aug_X = [tmp.reshape((1, 28, 28)) for tmp in data_aug_X] 
-        data_aug_X = np.concatenate(data_aug_X)
-        data_aug_X = np.expand_dims(data_aug_X, axis=1) 
-        dec_train_X = np.vstack([data_aug_X, self.train_X])
-        dec_train_y = np.hstack([data_aug_y, self.train_y]) 
-        dec_train_dataset = utils.YaleDataset(dec_train_X, dec_train_y)
-        dec_train_loader = torch.utils.data.DataLoader(self.train_dataset, batch_size=self.bsz,
-            shuffle=True, worker_init_fn=lambda wid: np.random.seed(np.uint32(torch.initial_seed() + wid)))
-        dec_test_loader = torch.utils.data.DataLoader(self.test_dataset, batch_size=100,
-            shuffle=True, worker_init_fn=lambda wid: np.random.seed(np.uint32(torch.initial_seed() + wid)))
-
-        """
+        if use_pca:
+            Ds = pickle.load(open('files/Ds_mnist_inf.pkl', 'rb'))
+            self.pca.fit(Ds.T)
         for idx_epoch in range(self.args.decoder_num_epochs):
-            print('Training epoch {}'.format(idx_epoch))
-            ct = 0
+            #print('Training epoch {}'.format(idx_epoch))
+            ct = 1
             losses = list()
             for _, current_batch in enumerate(self.train_loader):
                 self.decoder.zero_grad()
                 batch_images = Variable(current_batch[0]).float().to(device)
                 batch_scattering = self.scattering(batch_images).squeeze(1)
+                if use_pca:
+                    N = batch_scattering.shape[0]
+                    batch_scattering = batch_scattering.flatten(1)
+                    batch_scattering = self.pca.transform(batch_scattering.cpu().numpy())
+                    batch_scattering = torch.from_numpy(batch_scattering.reshape((N, 10, 7, 7)))
                 if torch.cuda.is_available():
                     batch_scattering = batch_scattering.cuda()
                 batch_inverse_scattering = self.decoder(batch_scattering)
@@ -178,9 +214,18 @@ class Trainer(object):
                 optimizer.step()
             print("[{}] Loss: {}".format(idx_epoch, np.sum(losses) / ct))
         
-        save_path = 'files/decoder_scattering_{}_TMP.pth'.format(self.args.dataset)
+        save_path = 'files/decoder_scattering_{}.pth'.format(self.args.dataset)
         torch.save(self.decoder.state_dict(), save_path)
         print("Saved decoder model to {}".format(save_path))
+
+    def test_decoder(self):
+        Ds = pickle.load(open('files/gan_Ds_mnist.pkl', 'rb'))
+        #pca_Ds = self.pca.fit_transform(Ds.T)
+        #test_ex = pca_Ds[0, :].reshape((1, 10, 7, 7))
+        test_ex = Ds[0, :].reshape((1, 100, 1, 1))
+        set_trace() 
+        decoder_out = self.decoder(torch.from_numpy(test_ex).cuda()).cpu().detach().numpy()
+        pickle.dump(decoder_out, open('decoder_outs/test_ex.pkl', 'wb'))
 
     def load_model(self, model_name):
         device_id = 0
@@ -208,6 +253,8 @@ class Trainer(object):
             self.train_dataset = utils.YaleDataset(raw_train_X, self.train_y, transform=transform)
             self.test_dataset = utils.YaleDataset(raw_test_X, self.test_y, transform=transform)
         elif self.dataset == 'cifar':
+            #transform = transforms.Compose(
+            #        [transforms.ToTensor(), transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
             self.train_dataset = torchvision.datasets.CIFAR10('files/', train=True, \
                 download=True, transform=transform)
             self.test_dataset = torchvision.datasets.CIFAR10('files/', train=False, \
@@ -217,6 +264,16 @@ class Trainer(object):
                 download=True, transform=transform) 
             self.test_dataset = torchvision.datasets.MNIST('files/', train=False, \
                 download=True, transform=transform)
+        elif self.dataset == 'fashionmnist':
+            self.train_dataset = torchvision.datasets.FashionMNIST('files/', train=True, \
+                download=True, transform=transform)
+            self.test_dataset = torchvision.datasets.FashionMNIST('files/', train=False, \
+                download=True, transform=transform)
+        elif self.dataset == 'imagenet':
+            train_dir = 'files/tiny-imagenet-200/train'
+            test_dir = 'files/tiny-imagenet-200/val'
+            self.train_dataset = torchvision.datasets.ImageFolder(train_dir, transform=transform)
+            self.test_dataset = torchvision.datasets.ImageFolder(test_dir, transform=transform)
         elif self.dataset == 'synthetic':
             subspace_dim = 50
             block_size = utils.SIZE_MAP[self.dataset]
@@ -318,7 +375,7 @@ class Trainer(object):
         torch.save(self.net.state_dict(), save_path)
         print("Saved model to {}".format(save_path))
 
-    def evaluate(self, test=True, given_examples=None):
+    def evaluate(self, test=True, given_examples=None, normalize=True):
         if test:
             data_loader = self.test_loader
         else:
@@ -333,12 +390,22 @@ class Trainer(object):
                 if given_examples is not None:
                     bx = torch.from_numpy(bx)
                     by = torch.from_numpy(by)
-                if not self.use_cnn:
+                if not self.use_cnn and self.arch != 'densenet' and self.arch != 'wresnet':
                     bx = bx.squeeze()
                     bx = bx.flatten(1)
                 if torch.cuda.is_available():
                     bx = bx.cuda()
                     by = by.cuda()
+                if self.dataset == 'cifar' and self.arch == 'wresnet' and normalize:
+                    normalize_transform = transforms.Normalize(mean=[x/255.0 for x in [125.3, 123.0, 113.9]],
+                                     std=[x/255.0 for x in [63.0, 62.1, 66.7]])
+                    #normalize = transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+                    bx = normalize_transform(bx)
+                if self.dataset == 'tiny_imagenet' and self.arch == 'alexnet' and normalize:
+                    transform_mean = np.array([ 0.485, 0.456, 0.406 ])
+                    transform_std = np.array([ 0.229, 0.224, 0.225 ])
+                    normalize_transform = transforms.Normalize(mean=transform_mean, std=transform_std)
+                    bx = normalize_transform(bx)
                 output = self.net.forward(bx.float())
                 pred = output.data.argmax(1)
                 num_correct += pred.eq(by.data.view_as(pred)).sum().item()
@@ -348,7 +415,7 @@ class Trainer(object):
             acc = num_correct / len(data_loader.dataset) * 100.
         return acc
 
-    def compute_train_dictionary(self, normalize_cols=True, return_raw=False):
+    def compute_train_dictionary(self, normalize_cols=True, return_raw=False, use_pca=False):
         train = self.train_full
         dictionary = list()
         raw_dict = list()
@@ -364,8 +431,12 @@ class Trainer(object):
                         x = x.cuda()
                     embed_x = self.scattering(x).cpu().detach().numpy()
                     dictionary.append(embed_x.reshape(-1))
-                       
-        dictionary = np.vstack(dictionary).T
+
+        if use_pca:
+            A = np.array(dictionary)
+            dictionary = self.pca.fit_transform(A).T
+        else:
+            dictionary = np.vstack(dictionary).T
         raw_dict = np.vstack(raw_dict).T
         if normalize_cols:
             if return_raw:
@@ -442,7 +513,7 @@ class Trainer(object):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-        if lp == np.infty: 
+        if lp == np.infty and lp_variant is None: 
             adversary = LinfPGDAttack(
                 net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
                 nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
@@ -455,7 +526,7 @@ class Trainer(object):
                     out = bx + delta
                 out = out.cpu().detach().numpy()
                 return out
-        elif lp == 2 and lp_variant is None:
+        elif lp == 2 and lp_variant is None: 
             adversary = L2PGDAttack(
                 net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
                 nb_iter=200, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
@@ -468,7 +539,7 @@ class Trainer(object):
                     out = bx + delta
                 out = out.cpu().detach().numpy()
                 return out
-        elif lp == 1:
+        elif lp == 1 and lp_variant is None:
             adversary = SparseL1DescentAttack(
                 net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
                 nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
@@ -485,6 +556,16 @@ class Trainer(object):
             adversary = CarliniWagnerL2Attack(
                 net, num_classes=self.num_classes, learning_rate=step_size, \
                 max_iterations=100)
+        if self.dataset == 'cifar' and self.arch == 'wresnet':
+            normalize = transforms.Normalize(mean=[x/255.0 for x in [125.3, 123.0, 113.9]],
+                             std=[x/255.0 for x in [63.0, 62.1, 66.7]])
+            bx = normalize(bx)
+        if self.dataset == 'tiny_imagenet' and self.arch == 'alexnet' and normalize:
+            transform_mean = np.array([ 0.485, 0.456, 0.406 ])
+            transform_std = np.array([ 0.229, 0.224, 0.225 ])
+            normalize_transform = transforms.Normalize(mean=transform_mean, std=transform_std)
+            bx = normalize_transform(bx)
+
         out = adversary.perturb(bx, by)
         if only_delta:
             out = out - bx

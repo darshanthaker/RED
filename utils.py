@@ -20,13 +20,19 @@ EPS = {'mnist': {1: 10., \
        np.infty: 0.3}, \
        'cifar': {1: 12., \
         2: 0.5, \
-        np.infty: 0.03},
+        np.infty: 0.3},
         'yale': {1: 7.5, \
         2: 1.0,
         np.infty: 0.03}, \
         'synthetic': {1: 20., \
         2: 4., \
-        np.infty: 0.6}
+        np.infty: 0.6},
+        'imagenet': {1: 12., \
+        2: 0.5, \
+        np.infty: 0.3}, \
+        'fashionmnist': {1: 10., \
+        2: 2., \
+        np.infty: 0.3}
         }
 STEP = {'mnist': {1: 0.8, \
         2: 0.1, \
@@ -39,11 +45,20 @@ STEP = {'mnist': {1: 0.8, \
         np.infty: 0.003}, \
         'synthetic': {1: 0.8, \
         2: 0.1, \
-        np.infty: 0.01}}
+        np.infty: 0.01},
+        'imagenet': {1: 1.0, \
+        2: 0.02, \
+        np.infty: 0.003}, \
+        'fashionmnist' : {1: 0.8, \
+        2: 0.1, \
+        np.infty: 0.01}
+        }
 SIZE_MAP = {'yale': 20, \
             'cifar': 200, \
             'mnist': 200, \
-            'synthetic': 200}
+            'imagenet': 20, \
+            'synthetic': 200, \
+            'fashionmnist': 200}
 
 def get_parser(parser):
     parser.add_argument('--dataset', default='mnist', type=str, help='Dataset to use for experiments')
@@ -66,6 +81,7 @@ def get_parser(parser):
     parser.add_argument('--use_cheat_grad', action='store_true', help='Whether or not to use test example in Jacobian computation')
     parser.add_argument('--realizable', action='store_true', help='Realizable or not')
     parser.add_argument('--make_realizable', action='store_true', help='Make Realizable or not')
+    parser.add_argument('--encoder_num_epochs', default=100, type=int, help='# of training epochs for encoder')
     parser.add_argument('--decoder_num_epochs', default=10, type=int, help='# of training epochs for decoder')
     return parser 
 

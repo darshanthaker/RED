@@ -13,6 +13,7 @@ import sbsc
 
 from pdb import set_trace
 from trainer import Trainer
+from train_embedding import EmbeddingTrainer
 from irls import BlockSparseIRLSSolver
 
 def plot_heatmap():
@@ -186,21 +187,39 @@ def eps_grid(args):
         np.random.seed(0)
         trainer = Trainer(args)
         #trainer.train(75, 0.05) 
-        trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset)))
+        trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset), map_location=torch.device('cpu')))
         test_acc = trainer.evaluate(test=True)
         print("Loaded pretrained model!. Test accuracy: {}%".format(test_acc))
-        sbsc.sbsc(trainer, args, eps, lp)
+        lp_variant = args.lp_variant
+        sbsc.sbsc(trainer, args, eps, lp, lp_variant)
 
 def sbsc_test(args):
     np.random.seed(0)
-    trainer = Trainer(args, use_maini_cnn=False)
+    use_pca = False
+    use_gan_Ds = True
+    trainer = Trainer(args, use_maini_cnn=False, use_pca=use_pca)
+    trainer.net.eval()
     #trainer.train() 
-    #trainer.train_decoder()
+    #trainer.train_encoder()
     #set_trace()
-    trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset), map_location=torch.device('cpu')))
+    #trainer.train_decoder(use_pca=use_pca)
+    #trainer.test_decoder()
+    #set_trace()
+    if args.arch == 'wresnet': 
+        trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset), map_location=torch.device('cpu'))['state_dict'])
+    elif args.arch != 'densenet':
+        trainer.net.load_state_dict(torch.load('files/pretrained_model_ce_{}_{}.pth'.format(args.arch, args.dataset), map_location=torch.device('cpu')))
     if args.embedding == 'scattering':
-        trainer.decoder.load_state_dict(torch.load('files/decoder_scattering_{}.pth'.format(args.dataset), map_location=torch.device('cpu')))
-        #trainer.decoder.load_state_dict(torch.load('files/wgan_200_{}_gen.pth'.format(args.dataset), map_location=torch.device('cpu')))
+        if use_pca:
+            trainer.decoder.load_state_dict(torch.load('files/decoder_scattering_pca_{}.pth'.format(args.dataset), map_location=torch.device('cpu')))
+        else:
+            trainer.decoder.load_state_dict(torch.load('files/decoder_scattering_{}.pth'.format(args.dataset), map_location=torch.device('cpu')))
+    elif args.embedding == 'studiogan':
+        trainer.decoder.load_state_dict(torch.load('files/netG_{}.pth'.format(args.dataset), map_location=torch.device('cpu'))['state_dict'])
+    elif args.embedding == 'gan' or args.embedding == 'wgan':
+        trainer.decoder.load_state_dict(torch.load('files/netG_{}.pth'.format(args.dataset), map_location=torch.device('cpu')))
+    else:
+        print("No decoder loaded!!")
     test_acc = trainer.evaluate(test=True)
     print("Loaded pretrained model and decoder!. Test accuracy: {}%".format(test_acc))
 
@@ -209,7 +228,7 @@ def sbsc_test(args):
     test_lp = args.test_lp
     lp_variant = args.lp_variant
     print("-------------EPS = {}---------------".format(eps))
-    sbsc.sbsc(trainer, args, eps, test_lp, lp_variant)
+    sbsc.sbsc(trainer, args, eps, test_lp, lp_variant, use_pca=use_pca, use_gan_Ds=use_gan_Ds)
     #sbsc.serialize_dictionaries(trainer, args)
 
 def sbsc_test_zero_eps(args):
@@ -268,6 +287,11 @@ def adaptive_attack(args):
     sbsc.sbsc(trainer, args, 0, -1, None, test_adv=test_adv)
     set_trace()
 
+def embedding_train(args):
+    Ds = pickle.load(open('files/Ds_{}_unnorm.pkl'.format(args.dataset), 'rb'))
+    embed_trainer = EmbeddingTrainer(args, Ds)
+    embed_trainer.train()
+
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description='Experiments')
     parser = utils.get_parser(parser)
@@ -279,3 +303,4 @@ if __name__=='__main__':
     #adaptive_attack(args)
     #eps_grid(args)
     #eps_plot()
+    #embedding_train(args)

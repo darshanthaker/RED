@@ -35,6 +35,7 @@ from trainer import Trainer
 from irls import BlockSparseIRLSSolver
 from active_set import BlockSparseActiveSetSolver
 from prox_solver import ProxSolver
+from prox_gan_solver import ProxGanSolver
 from multiprocessing import Pool
 
 def serialize_dictionaries(trainer, args):
@@ -147,29 +148,49 @@ def epoch_adversarial(loader, lr_schedule, model, epoch_i, attack, criterion = n
         
     return train_loss / train_n, train_acc / train_n, adv
 
-def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_adv=None):
+def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_adv=None, use_pca=False, use_gan_Ds=False):
     toolchain = args.toolchain
     eps_map = utils.EPS[args.dataset]
+    #eps = 0
 
-    """
+    #print("UNATTACKED EXAMPLES TAKE NOTE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
     attack_dicts = list()
     for attack in toolchain:
         if use_cnn_for_dict:
             attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack, net='cnn'))
         else:
             attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack))
-    """
 
     np.random.seed(0)
-    Ds, raw_Ds = trainer.compute_train_dictionary(return_raw=True)
-    #Da = np.hstack(attack_dicts)
-    #pickle.dump(Ds, open('files/Ds_mnist_inf.pkl', 'wb')) 
-    #pickle.dump(raw_Ds, open('files/raw_Ds_mnist_inf.pkl', 'wb')) 
-    #pickle.dump(Da, open('files/Da_mnist_inf.pkl', 'wb')) 
-    #np.random.seed(0)
-    #Ds = pickle.load(open('files/Ds_mnist_inf.pkl', 'rb'))
-    #raw_Ds = pickle.load(open('files/raw_Ds_mnist_inf.pkl', 'rb'))
-    Da = pickle.load(open('files/Da_mnist_inf.pkl', 'rb'))
+    Da = np.hstack(attack_dicts)
+    pickle.dump(Da, open('files/Da_{}_random.pkl'.format(args.dataset), 'wb'))
+    #if use_gan_Ds:
+    #    Ds = pickle.load(open('files/Ds_{}_inf.pkl'.format(args.dataset), 'rb'))
+    #Da = pickle.load(open('files/Da_{}.pkl'.format(args.dataset), 'rb'))
+    dst = trainer.dataset
+    sz = utils.SIZE_MAP[dst]
+    """
+    from block_indexer import BlockIndexer
+    hier_bi = BlockIndexer(200, (10, 3))
+    new_hier_bi = BlockIndexer(10, (10, 3))
+    Da_sub = np.zeros((Da.shape[0], 10*10*3))
+    for i in range(hier_bi.num_blocks[0]):
+        for j in range(hier_bi.num_blocks[1]):
+            Da_ij = hier_bi.get_block(Da, (i, j))
+            Da_sub = new_hier_bi.set_block(Da_sub, (i, j), Da_ij[:, :10])
+    #corr = Da_sub.T @ Da_sub
+    #corr = Da.T @ Da
+    #corr = np.abs(corr)
+    #corr = np.clip(corr, 0, 1) # For numerical issues.
+    #angles = np.arccos(corr)
+    #ax = sns.heatmap(angles)
+    #ax.set_xticklabels(range(1, 300, 50), size = 8)
+    #ax.set_yticklabels(range(1, 300, 50), size = 8)
+    #plt.ylabel('Person ID')
+    #plt.title("$\| x_{adv} - D_s[i]c_s[i] - D_ac_a\|_2$")
+    #plt.show()
+    #set_trace()
+    """
 
     if args.make_realizable:
         test_x = list()
@@ -201,7 +222,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         test_adv = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant)
         #delta = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant, only_delta=True)
 
-    acc = trainer.evaluate(given_examples=(test_adv, test_y))
+    acc = trainer.evaluate(given_examples=(test_adv, test_y), normalize=False)
     print("[L{}, variant={}, eps={}] Adversarial accuracy: {}%".format(test_lp, lp_variant, eps, acc))
 
     class_preds = list()
@@ -218,9 +239,12 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         corrupted_x = test_adv[t, :]
         ty = torch.from_numpy(np.array(test_y[t:t+1]))
         print("ty = {}, lp = {}".format(ty, test_lp))
-        Ds = normalize(Ds, axis=0)
+        print("not normalizing Ds!!!")
+        #Ds = normalize(Ds, axis=0)
         Da = normalize(Da, axis=0)
         x = corrupted_x.reshape(-1)
+        #pickle.dump(raw_x, open('decoder_outs_adv_linf_cifar/{}/raw_x.pkl'.format(t), 'wb'))
+        #continue
         #print("USING RAW X INSTEAD OF CORRUPTED!")
         #x = raw_x.reshape(-1)
 
@@ -231,10 +255,24 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
             solver = BlockSparseActiveSetSolver(Ds, Da, trainer.decoder, trainer.num_classes, num_attacks, sz, 
                     lambda1=args.lambda1, lambda2=args.lambda2)
         elif args.solver == 'prox':
+            if args.dataset == 'cifar':
+                input_shape = (3, 32, 32)
+            else:
+                input_shape = trainer.input_shape
             solver = ProxSolver(Ds, Da, trainer.decoder, trainer.num_classes, num_attacks, 
-                    sz, lambda1=args.lambda1, lambda2=args.lambda2)
+                    sz, input_shape, lambda1=args.lambda1, lambda2=args.lambda2)
+        elif args.solver == 'prox_gan':
+            if args.dataset == 'cifar':
+                input_shape = (3, 32, 32)
+            else:
+                input_shape = (1, 28, 28)
+            solver = ProxGanSolver(Da, trainer.decoder, trainer.num_classes, num_attacks,
+                    sz, input_shape)
         solvers.append(solver)
-        xs.append(x)
+        if use_gan_Ds:
+            xs.append(2*x - 1)
+        else:
+            xs.append(x)
     #print("Parallelizing over {} CPUs".format(multiprocessing.cpu_count() - 4))
     #p = Pool(processes=multiprocessing.cpu_count() - 4)
     results = list()
@@ -257,10 +295,10 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     elif args.solver == 'prox':
         if args.embedding is None:
             eta_s = 1.0 / np.linalg.norm(Ds @ Ds.T, ord=2)
+            eta_a = 1.0 / np.linalg.norm(Da @ Da.T, ord=2)
         else:
             eta_s = None
-        #eta_a = 1.0 / np.linalg.norm(Da @ Da.T, ord=2)
-        eta_a = None
+            eta_a = None
         print("Lambda_s: {}. Lambda_a: {}".format(args.lambda1, args.lambda2))
         for i in range(num_examples):
             if i % 5 == 0:
@@ -279,35 +317,52 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
             results.append(solvers[i].solve(xs[i], eta_s=eta_s, eta_a=eta_a, dir_name='decoder_outs_adv_l{}/{}'.format(str_lp, i)))
         #futs = [p.apply_async(solvers[i].solve(xs[i], eta_s=eta_s, eta_a=eta_a)) for i in range(num_examples)]
         #results = [fut.get() for fut in futs]
-            #print("GROUND TRUTH LABEL: {}".format(test_y[i]))
+            print("GROUND TRUTH LABEL: {}".format(test_y[i]))
+    elif args.solver == 'prox_gan':
+        for i in range(num_examples):
+            if i % 5 == 0:
+                print(i)
+            if test_lp == float("inf"):
+                str_lp = "inf"
+            else:
+                str_lp = str(int(test_lp))
+            if not os.path.exists('decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i)):
+                os.mkdir('decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
+            else:
+                os.system('rm -rf decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
+                os.mkdir('decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
+            results.append(solvers[i].solve(xs[i], dir_name='decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i)))
+            print("GROUND TRUTH LABEL: {}".format(test_y[i]))
+
     for (res_idx, res) in enumerate(results):
-        #cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, dn, err_attack = res
-        cs_est, ca_est, class_pred, attack_pred, dn = res
-        #pickle.dump(cs_est, open('files/est_nowarp/cs_est_{}.pkl'.format(res_idx), 'wb'))
-        #pickle.dump(ca_est, open('files/est_nowarp/ca_est_{}.pkl'.format(res_idx), 'wb'))
-        #plt.bar(np.arange(len(cs_est)), cs_est)
-        #plt.savefig('cs_est.png')
-        #set_trace()
-        #cs_est, Ds_est, class_pred, dn = res
-        #attack_pred = -1
-        class_preds.append(class_pred)
+        if args.solver == 'active_refined':
+            cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, dn, err_attack = res
+        elif args.solver == 'prox':
+            cs_est, ca_est, class_pred, attack_pred, dn = res
+        elif args.solver == 'prox_gan':
+            cs_est, attack_pred, dn = res
+            
+        if args.solver != 'prox_gan':
+            class_preds.append(class_pred)
         attack_preds.append(attack_pred)
         denoised.append(dn)
 
-    class_preds = np.array(class_preds)
+    if args.solver != 'prox_gan':
+        class_preds = np.array(class_preds)
+        print("Class preds: {}. Ground Truth: {}".format(class_preds, test_y[:num_examples]))
+        signal_acc = np.sum(class_preds == test_y[:num_examples]) / float(num_examples) * 100.
+        print("Signal classification accuracy: {}%".format(signal_acc))
+
     attack_preds = np.array(attack_preds)
-    print("Class preds: {}. Ground Truth: {}".format(class_preds, test_y[:num_examples]))
     print("Attack preds: {}. Ground Truth: {}".format(attack_preds, toolchain.index(test_lp)))
     denoised = np.array(denoised)
-    signal_acc = np.sum(class_preds == test_y[:num_examples]) / float(num_examples) * 100.
     attack_acc = np.sum(attack_preds == toolchain.index(test_lp)) / float(num_examples) * 100.
     #if args.dataset == 'mnist':
     #    denoised = denoised.reshape((num_examples, 1, 28, 28))
-    #denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:100]))
+    denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:num_examples]))
 
-    print("Signal classification accuracy: {}%".format(signal_acc))
     print("Attack detection accuracy: {}%".format(attack_acc))
-    #print("Denoised accuracy: {}%".format(denoised_acc))
+    print("Denoised accuracy: {}%".format(denoised_acc))
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description='SBSC')

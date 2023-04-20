@@ -30,7 +30,7 @@ class CNN(nn.Module):
 
     def __init__(self, arch, embedding=None, in_channels=3, num_classes=10, linear=False):
         super().__init__()
-        if arch == 'carlini_cnn_mnist':
+        if arch == 'carlini_cnn_mnist' or arch == 'carlini_cnn_fashionmnist':
             cfg = [32, 32, 'M', 64, 64, 'M']
             output_size = 64*4*4
         elif arch == 'carlini_cnn_cifar':
