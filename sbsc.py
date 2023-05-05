@@ -164,6 +164,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     """
 
     np.random.seed(0)
+<<<<<<< HEAD
     #Da = np.hstack(attack_dicts)
     #pickle.dump(Da, open('files/Da_{}_maini.pkl'.format(args.dataset), 'wb'))
     #if use_gan_Ds:
@@ -235,7 +236,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     attack_preds = list()
     denoised = list()
     mismatch = 0
-    num_examples = 100
+    num_examples = 10
     solvers = list()
     xs = list()
     for t in range(num_examples):

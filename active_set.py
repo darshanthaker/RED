@@ -182,7 +182,6 @@ class BlockSparseActiveSetSolver(object):
     def get_decoder_Ds_cs(self, Ds, cs_est):
         torch_inp = torch.from_numpy(np.asarray(Ds @ cs_est, dtype=np.float32))
         # TODO(dbthaker): Put back first line. - DONE.
-        #torch_inp = torch_inp.reshape((1, 81, 7, 7))
         #torch_inp = torch_inp.reshape((1, 1, 28, 28))
         if torch.cuda.is_available():
             torch_inp = torch_inp.cuda()
