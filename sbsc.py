@@ -34,6 +34,8 @@ from kymatio.torch import Scattering2D
 from trainer import Trainer
 from irls import BlockSparseIRLSSolver
 from active_set import BlockSparseActiveSetSolver
+from prox_solver import ProxSolver
+from prox_gan_solver import ProxGanSolver
 from multiprocessing import Pool
 
 def serialize_dictionaries(trainer, args):
@@ -146,17 +148,20 @@ def epoch_adversarial(loader, lr_schedule, model, epoch_i, attack, criterion = n
         
     return train_loss / train_n, train_acc / train_n, adv
 
-def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_adv=None):
+def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_adv=None, use_pca=False, use_gan_Ds=False):
     toolchain = args.toolchain
     eps_map = utils.EPS[args.dataset]
-    #eps = eps_map[args.test_lp]
+    #eps = 0
 
+    #print("UNATTACKED EXAMPLES TAKE NOTE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    """
     attack_dicts = list()
     for attack in toolchain:
         if use_cnn_for_dict:
             attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack, net='cnn'))
         else:
             attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack))
+    """
 
     np.random.seed(0)
     raw_Ds = trainer.compute_train_dictionary()
@@ -167,6 +172,36 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     else:
         Ds = raw_Ds
     raw_Da = np.hstack(attack_dicts)
+    #Da = np.hstack(attack_dicts)
+    #pickle.dump(Da, open('files/Da_{}_maini.pkl'.format(args.dataset), 'wb'))
+    #if use_gan_Ds:
+    #    Ds = pickle.load(open('files/Ds_{}_inf.pkl'.format(args.dataset), 'rb'))
+    Ds = pickle.load(open('files/raw_Ds_cifar_inf.pkl', 'rb'))
+    Da = pickle.load(open('files/Da_{}_maini.pkl'.format(args.dataset), 'rb'))
+    dst = trainer.dataset
+    sz = utils.SIZE_MAP[dst]
+    """
+    from block_indexer import BlockIndexer
+    hier_bi = BlockIndexer(200, (10, 3))
+    new_hier_bi = BlockIndexer(10, (10, 3))
+    Da_sub = np.zeros((Da.shape[0], 10*10*3))
+    for i in range(hier_bi.num_blocks[0]):
+        for j in range(hier_bi.num_blocks[1]):
+            Da_ij = hier_bi.get_block(Da, (i, j))
+            Da_sub = new_hier_bi.set_block(Da_sub, (i, j), Da_ij[:, :10])
+    #corr = Da_sub.T @ Da_sub
+    #corr = Da.T @ Da
+    #corr = np.abs(corr)
+    #corr = np.clip(corr, 0, 1) # For numerical issues.
+    #angles = np.arccos(corr)
+    #ax = sns.heatmap(angles)
+    #ax.set_xticklabels(range(1, 300, 50), size = 8)
+    #ax.set_yticklabels(range(1, 300, 50), size = 8)
+    #plt.ylabel('Person ID')
+    #plt.title("$\| x_{adv} - D_s[i]c_s[i] - D_ac_a\|_2$")
+    #plt.show()
+    #set_trace()
+    """
 
     if args.make_realizable:
         test_x = list()
@@ -185,59 +220,30 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         test_idx = np.random.choice(list(range(trainer.N_test)), 100)
         test_x = trainer.test_X[test_idx, :]
         test_y = trainer.test_y[test_idx]
-    #pickle.dump(Ds, open('files/Ds.pkl', 'wb'))
-    #pickle.dump(raw_Da, open('files/raw_Da.pkl', 'wb'))
-    #Ds = pickle.load(open('files/Ds.pkl', 'rb'))
-    #raw_Da = pickle.load(open('files/raw_Da.pkl', 'rb'))
+        #print("REALIZABLE CASE!!")
+        #test_idx = np.random.choice(list(range(trainer.N_train)), 100)
+        #test_x = trainer.train_X[test_idx, :]
+        #test_y = trainer.train_y[test_idx]
     
     dst = trainer.dataset
     sz = utils.SIZE_MAP[dst]
     num_attacks = len(toolchain)
     
+    test_adv = pickle.load(open('files/test_adv_{}_{}_maini.pkl'.format(args.dataset, test_lp), 'rb'))
     if test_adv is None:
         test_adv = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant)
-        delta = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant, only_delta=True)
-    #real_test_adv = trainer.test_lp_attack(test_lp, test_x, test_y, 0.3, realizable=False, lp_variant=lp_variant)
+        #delta = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant, only_delta=True)
 
-    ####### MAINI CODE
-    #trainer.load_model('Msd')
-    #test_loader = DataLoader(trainer.test_dataset, batch_size = 100, shuffle=False)
-    #device_id = 0
-    #device = torch.device("cuda:{}".format(device_id) if torch.cuda.is_available() else "cpu")
-    #torch.cuda.set_device(int(device_id))
-    #total_loss, maini_acc, maini_adv = epoch_adversarial(test_loader, None, trainer.net, 0, utils.pgd_linf, device = device, stop = True, restarts = 10, num_iter = 100, epsilon=eps)
+    #pickle.dump(test_adv, open('files/test_adv_{}_{}_maini.pkl'.format(args.dataset, test_lp), 'wb'))
 
-    
-    #maini = next(iter(test_loader))
-    #maini_x = maini[0].cuda()
-    #maini_y = maini[1].cuda()
-    #test_adv = trainer.test_lp_attack(test_lp, maini_x, maini_y, eps, realizable=False)
-    #delta = utils.pgd_linf(trainer.net, maini_x, maini_y, restarts=10, num_iter=100, epsilon=eps)
-    #red_adv =  trainer._lp_attack(test_lp, eps, maini_x, maini_y)
-    #maini_adv = maini_adv.cpu().detach().numpy()
-    #maini_y = maini_y.cpu().detach().numpy()
-    ########
-    #bx = trainer.test_X[test_idx, :, :]
-    #set_trace()
-    acc = trainer.evaluate(given_examples=(test_adv, test_y))
+    acc = trainer.evaluate(given_examples=(test_adv, test_y), normalize=False)
     print("[L{}, variant={}, eps={}] Adversarial accuracy: {}%".format(test_lp, lp_variant, eps, acc))
-
-    #models = ['L1', 'L2', 'Linf', 'Max', 'Avg', 'Msd', 'Vanilla']
-    #for model in models:
-    #    acc = evaluate_baseline(model, (test_adv, maini_y))
-    #    maini_acc = evaluate_baseline(model, (maini_adv, maini_y))
-    #    print("{}: Defense Accuracy: {}%".format(model, acc))
-    #    print("{}: Maini Defense Accuracy: {}%".format(model, maini_acc))
-    #set_trace()
-    #bacc = baseline(trainer, test_adv[:100, :], test_y[:100])
-    #print("Baseline accuracy: {}%".format(bacc))
-    #return
 
     class_preds = list()
     attack_preds = list()
     denoised = list()
     mismatch = 0
-    num_examples = 100
+    num_examples = 10
     solvers = list()
     xs = list()
     for t in range(num_examples):
@@ -247,71 +253,40 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         corrupted_x = test_adv[t, :]
         ty = torch.from_numpy(np.array(test_y[t:t+1]))
         print("ty = {}, lp = {}".format(ty, test_lp))
-        if args.embedding == 'scattering':
-            cheat_x = torch.from_numpy(test_x[t, :]).unsqueeze(0)
-            tcorrupted_x = torch.from_numpy(corrupted_x).unsqueeze(0)
-            if torch.cuda.is_available():
-                cheat_x = cheat_x.cuda()
-                tcorrupted_x = tcorrupted_x.cuda()
-            traw_x = torch.from_numpy(raw_x[None, :])
-
-            if args.realizable:
-                x_Da = trainer._lp_attack(test_lp, eps, traw_x, ty, only_delta=True)
-                x_Da = x_Da.reshape(-1)
-                raw_Da[:, 2000*toolchain.index(test_lp) + 200*ty + 50] = x_Da
-                Ds[:, 200*ty+50] = trainer.scattering(traw_x).cpu().detach().numpy().reshape(-1)
-
-            start = time.time()
-            try:
-                grad = pickle.load(open('files/jacobians_{}/grad_{}_{}_{}.pkl'.format(args.dataset, test_lp, eps, t), 'rb'))
-            except:
-                #grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, tcorrupted_x, vectorize=True)
-                grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, tcorrupted_x)
-                grad = grad.reshape(-1, trainer.d)
-                pickle.dump(grad, open('files/jacobians_{}/grad_{}_{}_{}.pkl'.format(args.dataset, test_lp, eps, t), 'wb'))
-            try:
-                cheat_grad = pickle.load(open('files/jacobians_{}/cheat_grad_{}.pkl'.format(args.dataset, t), 'rb'))
-            except:
-                #cheat_grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, cheat_x, vectorize=True)
-                cheat_grad = torch.autograd.functional.jacobian(trainer.scattering.scattering, cheat_x)
-                cheat_grad = cheat_grad.reshape(-1, trainer.d)
-                pickle.dump(cheat_grad, open('files/jacobians_{}/cheat_grad_{}.pkl'.format(args.dataset, t), 'wb'))
-            end = time.time()
-            print("jacobian took {} seconds".format(end - start))
-
-            if args.use_cheat_grad:
-                print("USING CHEAT GRAD!")
-                Da = cheat_grad.cpu() @ raw_Da
-            else:
-                Da = grad.cpu() @ raw_Da
-            Da = Da.numpy()
-            Ds = normalize(Ds, axis=0)
-            Da = normalize(Da, axis=0)
-            x = trainer.scattering(tcorrupted_x).cpu().detach().numpy().reshape(-1)
-        elif args.embedding == 'warp':
-            tcorrupted_x = torch.from_numpy(corrupted_x).unsqueeze(0)
-            traw_x = torch.from_numpy(raw_x[None, :])
-            grad = torch.autograd.functional.jacobian(trainer.warp, tcorrupted_x, strict=True)
-            grad = grad.reshape(-1, trainer.d)
-            Da = grad @ raw_Da
-            Ds = normalize(Ds, axis=0)
-            Da = normalize(Da, axis=0)
-            #x = trainer.warp(corrupted_x.reshape(-1)).detach().numpy()
-            x = trainer.warp(corrupted_x.reshape(-1))
-        else:
-            Da = raw_Da
-            Ds = normalize(Ds, axis=0)
-            Da = normalize(Da, axis=0)
-            x = corrupted_x.reshape(-1)
+        #print("not normalizing Ds!!!")
+        Ds = normalize(Ds, axis=0)
+        Da = normalize(Da, axis=0)
+        x = corrupted_x.reshape(-1)
+        #pickle.dump(raw_x, open('decoder_outs_adv_linf_cifar/{}/raw_x.pkl'.format(t), 'wb'))
+        #continue
+        #print("USING RAW X INSTEAD OF CORRUPTED!")
+        #x = raw_x.reshape(-1)
 
         if args.solver == 'irls':
             solver = BlockSparseIRLSSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
                     lambda1=args.lambda1, lambda2=args.lambda2, del_threshold=args.del_threshold)
-        else:
-            solver = BlockSparseActiveSetSolver(Ds, Da, trainer.num_classes, num_attacks, sz, 
+        elif args.solver == 'active_refined':
+            solver = BlockSparseActiveSetSolver(Ds, Da, trainer.decoder, trainer.num_classes, num_attacks, sz, 
                     lambda1=args.lambda1, lambda2=args.lambda2)
+        elif args.solver == 'prox':
+            if args.dataset == 'cifar':
+                input_shape = (3, 32, 32)
+            else:
+                input_shape = trainer.input_shape
+            solver = ProxSolver(Ds, Da, trainer.decoder, trainer.num_classes, num_attacks, 
+                    sz, input_shape, lambda1=args.lambda1, lambda2=args.lambda2)
+        elif args.solver == 'prox_gan':
+            if args.dataset == 'cifar':
+                input_shape = (3, 32, 32)
+            else:
+                input_shape = (1, 28, 28)
+            solver = ProxGanSolver(Da, trainer.decoder, trainer.num_classes, num_attacks,
+                    sz, input_shape)
         solvers.append(solver)
-        xs.append(x)
+        if use_gan_Ds:
+            xs.append(2*x - 1)
+        else:
+            xs.append(x)
     #print("Parallelizing over {} CPUs".format(multiprocessing.cpu_count() - 4))
     #p = Pool(processes=multiprocessing.cpu_count() - 4)
     results = list()
@@ -329,51 +304,79 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
             if i % 5 == 0:
                 print(i)
             results.append(solvers[i].solve(xs[i], alg='Ds+Da'))
-
-            """
-            corrupted_x = real_test_adv[t, :]
-            tcorrupted_x = torch.from_numpy(corrupted_x).unsqueeze(0)
-            if torch.cuda.is_available():
-                tcorrupted_x = tcorrupted_x.cuda()
-            x = trainer.scattering(tcorrupted_x).cpu().detach().numpy().reshape(-1)
-            cs_est, Ds_est, class_pred, dn = results[i]
-            grad = pickle.load(open('files/jacobians_{}/grad_{}_{}.pkl'.format(args.dataset, test_lp, i), 'rb'))
-            set_trace()
-            delta = trainer._lp_attack(test_lp, 0.3, torch.from_numpy(test_x[0:1, :]), torch.from_numpy(test_y[0:1]), only_delta=True)
-            delta = delta.reshape(-1)
-            lhs = x
-            rhs = Ds_est @ cs_est + grad @ delta
-            set_trace()
-            """
         #futs = [p.apply_async(solvers[i].solve, args=([xs[i]])) for i in range(num_examples)]
         #results = [fut.get() for fut in futs]
+    elif args.solver == 'prox':
+        if args.embedding is None:
+            eta_s = 1.0 / np.linalg.norm(Ds @ Ds.T, ord=2)
+            eta_a = 1.0 / np.linalg.norm(Da @ Da.T, ord=2)
+        else:
+            eta_s = None
+            eta_a = None
+        print("Lambda_s: {}. Lambda_a: {}".format(args.lambda1, args.lambda2))
+        for i in range(num_examples):
+            if i % 5 == 0:
+                print(i)
+            if test_lp == float("inf"):
+                str_lp = "inf"
+            else:
+                str_lp = str(int(test_lp))
+            if not os.path.exists('decoder_outs_adv_l{}/{}'.format(str_lp, i)):
+                os.mkdir('decoder_outs_adv_l{}/{}'.format(str_lp, i))
+            else:
+                os.system('rm -rf decoder_outs_adv_l{}/{}'.format(str_lp, i))
+                #os.rmdir('decoder_outs_adv_l{}/{}'.format(str_lp, i))
+                os.mkdir('decoder_outs_adv_l{}/{}'.format(str_lp, i))
+            #results.append(solvers[i].solve(xs[i], eta_s=eta_s, eta_a=eta_a, cheat_y=test_y[i], dir_name='decoder_outs_cheat/{}'.format(i)))
+            results.append(solvers[i].solve(xs[i], eta_s=eta_s, eta_a=eta_a, dir_name='decoder_outs_adv_l{}/{}'.format(str_lp, i)))
+        #futs = [p.apply_async(solvers[i].solve(xs[i], eta_s=eta_s, eta_a=eta_a)) for i in range(num_examples)]
+        #results = [fut.get() for fut in futs]
+            print("GROUND TRUTH LABEL: {}".format(test_y[i]))
+    elif args.solver == 'prox_gan':
+        for i in range(num_examples):
+            if i % 5 == 0:
+                print(i)
+            if test_lp == float("inf"):
+                str_lp = "inf"
+            else:
+                str_lp = str(int(test_lp))
+            if not os.path.exists('decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i)):
+                os.mkdir('decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
+            else:
+                os.system('rm -rf decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
+                os.mkdir('decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
+            results.append(solvers[i].solve(xs[i], dir_name='decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i)))
+            print("GROUND TRUTH LABEL: {}".format(test_y[i]))
+
     for (res_idx, res) in enumerate(results):
-        cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, dn, err_attack = res
-        pickle.dump(cs_est, open('files/est_nowarp/cs_est_{}.pkl'.format(res_idx), 'wb'))
-        pickle.dump(ca_est, open('files/est_nowarp/ca_est_{}.pkl'.format(res_idx), 'wb'))
-        #plt.bar(np.arange(len(cs_est)), cs_est)
-        #plt.savefig('cs_est.png')
-        #set_trace()
-        #cs_est, Ds_est, class_pred, dn = res
-        #attack_pred = -1
-        class_preds.append(class_pred)
+        if args.solver == 'active_refined':
+            cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, dn, err_attack = res
+        elif args.solver == 'prox':
+            cs_est, ca_est, class_pred, attack_pred, dn = res
+        elif args.solver == 'prox_gan':
+            cs_est, attack_pred, dn = res
+            
+        if args.solver != 'prox_gan':
+            class_preds.append(class_pred)
         attack_preds.append(attack_pred)
         denoised.append(dn)
 
-    class_preds = np.array(class_preds)
+    if args.solver != 'prox_gan':
+        class_preds = np.array(class_preds)
+        print("Class preds: {}. Ground Truth: {}".format(class_preds, test_y[:num_examples]))
+        signal_acc = np.sum(class_preds == test_y[:num_examples]) / float(num_examples) * 100.
+        print("Signal classification accuracy: {}%".format(signal_acc))
+
     attack_preds = np.array(attack_preds)
-    print("Class preds: {}. Ground Truth: {}".format(class_preds, test_y[:num_examples]))
     print("Attack preds: {}. Ground Truth: {}".format(attack_preds, toolchain.index(test_lp)))
     denoised = np.array(denoised)
-    signal_acc = np.sum(class_preds == test_y[:num_examples]) / float(num_examples) * 100.
     attack_acc = np.sum(attack_preds == toolchain.index(test_lp)) / float(num_examples) * 100.
     #if args.dataset == 'mnist':
     #    denoised = denoised.reshape((num_examples, 1, 28, 28))
-    #denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:100]))
+    denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:num_examples]))
 
-    print("Signal classification accuracy: {}%".format(signal_acc))
     print("Attack detection accuracy: {}%".format(attack_acc))
-    #print("Denoised accuracy: {}%".format(denoised_acc))
+    print("Denoised accuracy: {}%".format(denoised_acc))
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description='SBSC')

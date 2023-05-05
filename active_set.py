@@ -2,18 +2,22 @@ import numpy as np
 import cvxpy as cp
 import copy
 import utils
+import torch
+import pickle
 
 from cvxpy.atoms.norm import norm
 from pdb import set_trace
 from block_indexer import BlockIndexer
+from prox_solver import ProxSolver
 from ordered_set import OrderedSet
 
 class BlockSparseActiveSetSolver(object):
 
-    def __init__(self, Ds, Da, num_classes, num_attacks, block_size, \
+    def __init__(self, Ds, Da, decoder, num_classes, num_attacks, block_size, \
                  max_iter=4, lambda1=0.1, lambda2=0.1):
         self.Ds = Ds
         self.Da = Da
+        self.decoder = decoder
         self.num_classes = num_classes
         self.num_attacks = num_attacks
         self.block_size = block_size
@@ -175,18 +179,39 @@ class BlockSparseActiveSetSolver(object):
         print("Number of iterations: {}".format(t))
         return cs_est, ca_est, sig_active_set, att_active_set
 
-    def compute_optimality(self, x, Ds_est, Da_est, Ds_a, cs_a, Da_a, ca_a):
+    def get_decoder_Ds_cs(self, Ds, cs_est):
+        torch_inp = torch.from_numpy(np.asarray(Ds @ cs_est, dtype=np.float32))
+        # TODO(dbthaker): Put back first line. - DONE.
+        #torch_inp = torch_inp.reshape((1, 1, 28, 28))
+        if torch.cuda.is_available():
+            torch_inp = torch_inp.cuda()
+        decoder_out = self.decoder(torch_inp).cpu().detach().numpy().reshape(-1)
+        return torch_inp, decoder_out
+
+    def compute_optimality(self, x, Ds_est, Da_est, cs_est, Ds_a, cs_a, Da_a, ca_a):
         sig_norms = np.zeros(self.num_classes)
+        d = x.shape[0]
         for i in range(self.num_classes):
             Ds_i = self.sig_bi.get_block(Ds_est, i)
-            val = Ds_i.T @ (x - Ds_a @ cs_a - Da_a @ ca_a)
+            cs_i = self.sig_bi.get_block(cs_est, i)
+            #torch_inp, _ = self.get_decoder_Ds_cs(Ds_i, cs_i)
+            # TODO(dbthaker): Double Check.
+            torch_inp, decoder_out = self.get_decoder_Ds_cs(Ds_a, cs_a)
+            embed_d = Ds_i.shape[0]
+            #v = torch.from_numpy((x - decoder_out).reshape((1, 1, 28, 28)))
+            v = torch.from_numpy((x - decoder_out))
+            if torch.cuda.is_available():
+                v = v.cuda()
+            _, vjp = torch.autograd.functional.vjp(self.decoder, torch_inp, v=v, strict=True)
+            val = Ds_i.T @ vjp.reshape(-1).cpu().detach().numpy()
             sig_norms[i] = np.linalg.norm(val)
 
         att_norms = np.zeros((self.num_classes, self.num_attacks))
         for i in range(self.num_classes):
             for j in range(self.num_attacks):
                 Da_ij = self.hier_bi.get_block(Da_est, (i, j))
-                val = Da_ij.T @ (x - Ds_a @ cs_a - Da_a @ ca_a)
+                _, decoder_out = self.get_decoder_Ds_cs(Ds_a, cs_a)
+                val = Da_ij.T @ (x - decoder_out - Da_a @ ca_a)
                 att_norms[i][j] = np.linalg.norm(val)
         return sig_norms, att_norms
 
@@ -205,6 +230,9 @@ class BlockSparseActiveSetSolver(object):
         cs_est = np.zeros(m)
         ca_est = np.zeros(n)
 
+        for j in range(self.num_attacks):
+            att_active_set.add(j)
+
         converged = False
         t = 0
         while not converged and t < self.max_iter:
@@ -212,27 +240,34 @@ class BlockSparseActiveSetSolver(object):
             cs_a = self.get_active_blocks(cs_est, self.sig_bi, sig_active_set)
             Da_a = self.get_active_blocks(Da_est, self.hier_bi, sig_active_set, hier_active_set=att_active_set)
             ca_a = self.get_active_blocks(ca_est, self.hier_bi, sig_active_set, hier_active_set=att_active_set)
-            sig_norms, att_norms = self.compute_optimality(x, Ds_est, Da_est, Ds_a, cs_a, Da_a, ca_a)
+            sig_norms, att_norms = self.compute_optimality(x, Ds_est, Da_est, cs_est, Ds_a, cs_a, Da_a, ca_a)
 
             sorted_sig_norms = np.sort(sig_norms)[::-1]
             sorted_att_norms = np.sort(att_norms.reshape(-1))[::-1]
-            gamma_s = (sorted_sig_norms[0] + sorted_sig_norms[1]) / 2
-            gamma_a = (sorted_att_norms[0] + sorted_att_norms[1]) / 2
-            #gamma_s = sorted_sig_norms[0]
-            #gamma_a = sorted_att_norms[0]
+            #gamma_s = (sorted_sig_norms[0] + sorted_sig_norms[1]) / 2
+            #gamma_a = (sorted_att_norms[0] + sorted_att_norms[1]) / 2
+            gamma_s = sorted_sig_norms[0] / 5
+            #gamma_a = sorted_att_norms[0] / 5
+            gamma_a = 0.5
             print("gamma_s: {}. gamma_a: {}".format(gamma_s, gamma_a))
             max_sig_idx  = np.argmax(sig_norms)
             max_att_idx = np.unravel_index(np.argmax(att_norms), att_norms.shape)[1]
             sig_active_set.add(max_sig_idx)
-            att_active_set.add(max_att_idx)
+            #att_active_set.add(max_att_idx)
 
-            if sig_active_set.issubset(prev_sig_active_set) and att_active_set.issubset(prev_att_active_set):
-                converged = True
-                #break
+            #if sig_active_set.issubset(prev_sig_active_set) and att_active_set.issubset(prev_att_active_set):
+            #    converged = True
+            #    break
 
             print("Sig active set: {}. Att active set: {}".format(sig_active_set, att_active_set))
 
-            cs_est_blocks, ca_est_blocks = self._elastic_net_solver(x, Ds_est, Da_est, gamma_s, gamma_a, sig_active_set, att_active_set)
+            #cs_est_blocks, ca_est_blocks = self._elastic_net_solver(x, Ds_est, Da_est, gamma_s, gamma_a, sig_active_set, att_active_set)
+            Ds_a = self.get_active_blocks(Ds_est, self.sig_bi, sig_active_set)
+            Da_a = self.get_active_blocks(Da_est, self.hier_bi, sig_active_set, hier_active_set=att_active_set)
+            input_shape = (3, 32, 32)
+            prox_solver = ProxSolver(Ds_a, Da_a, self.decoder, len(sig_active_set), len(att_active_set), \
+                    self.block_size, input_shape, lambda1=gamma_s, lambda2=gamma_a) 
+            cs_est_blocks, ca_est_blocks, _, _, _ = prox_solver.solve_coef(x)
             active_sig_bi = BlockIndexer(self.block_size, [len(sig_active_set)])
             active_hier_bi = BlockIndexer(self.block_size, [len(sig_active_set), len(att_active_set)])
             for (sig_idx, i) in enumerate(sig_active_set):
@@ -355,21 +390,24 @@ class BlockSparseActiveSetSolver(object):
         for i in sig_active_set:
             Ds_blk = self.sig_bi.get_block(Ds_est, i)
             cs_blk = self.sig_bi.get_block(cs_est, i)
+            _, decoder_out = self.get_decoder_Ds_cs(Ds_blk, cs_blk)
             # TODO: This shouldn't be full Da.
-            err_class.append(np.linalg.norm(x - Ds_blk@cs_blk - Da_est@ca_est))
+            err_class.append(np.linalg.norm(x - decoder_out - Da_est@ca_est))
         err_class = np.array(err_class)
         i_star = np.argmin(err_class)
         class_pred = sig_active_set[i_star]
 
+        _, decoder_out = self.get_decoder_Ds_cs(Ds_est, cs_est)
         err_attack = list()
         for j in att_active_set:
             Da_blk = self.hier_bi.get_block(Da_est, (class_pred, j)) 
             ca_blk = self.hier_bi.get_block(ca_est, (class_pred, j)) 
-            err_attack.append(np.linalg.norm(x - Ds_est@cs_est - Da_blk@ca_blk))
+            err_attack.append(np.linalg.norm(x - decoder_out - Da_blk@ca_blk))
         err_attack = np.array(err_attack)
         j_star = np.argmin(err_attack)
         attack_pred = att_active_set[j_star]
         Ds_blk = self.sig_bi.get_block(Ds_est, class_pred)
         cs_blk = self.sig_bi.get_block(cs_est, class_pred)
         denoised = Ds_blk@cs_blk
+        denoised = denoised.reshape((3, 32, 32))
         return cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, denoised, err_attack

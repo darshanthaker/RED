@@ -4,16 +4,30 @@ import os
 import pickle
 import scipy.io
 import torch
+import torch.optim as optim
 import torchvision
 import torch.nn as nn
 import utils
 import copy
 import baselines
+import lpips
+
+# Importing from stylegan_xl
+sys.path.insert(0, '/cis/home/dbthaker/dev/research/stylegan_xl')
+import legacy
+import dnnlib
 
 from sklearn.preprocessing import normalize
+from sklearn.decomposition import PCA
 from neural_net import NN, CNN
+from densenet import densenet121
+from wideresnet import WideResNet
+from decoder import Generator, WGANGenerator
+from studiogan_decoder import StudioGenerator
+from dcgan import DCGenerator
 from pdb import set_trace
 from torchvision import transforms
+from torch.autograd import Variable
 from torch.utils.data import DataLoader, Dataset
 from advertorch.attacks import SparseL1DescentAttack, L2PGDAttack, LinfPGDAttack, CarliniWagnerL2Attack
 
@@ -44,10 +58,10 @@ class Warp(nn.Module):
 
 class Trainer(object):
 
-    def __init__(self, args, use_maini_cnn=False):
+    def __init__(self, args, use_maini_cnn=False, use_pca=False):
         self.args = args
         self.arch = self.args.arch
-        self.use_cnn = 'cnn' in self.arch
+        self.use_cnn = 'cnn' in self.arch or self.arch == 'densenet' or self.arch == 'wresnet' or self.arch == 'alexnet'
         self.bsz = self.args.bsz
         self.dataset = self.args.dataset
         self.eps_map = utils.EPS[self.dataset]
@@ -68,21 +82,44 @@ class Trainer(object):
             #else:
             #    self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
         elif self.dataset == 'mnist':
-            self.input_shape= (28, 28)
+            self.input_shape = (28, 28)
             self.d = 28*28
             self.num_classes = 10
             #if self.embedding is None:
             self.in_channels = 1
             #else:
             #    self.in_channels = int(1 + self.L*self.J + (self.L**2*self.J*(self.J - 1))/2)
+        elif self.dataset == 'fashionmnist':
+            self.input_shape = (28, 28)
+            self.d = 28*28
+            self.num_classes = 10
+            self.in_channels = 1
         elif self.dataset == 'synthetic':
             self.d = 300
             self.input_shape = ()
             self.num_classes = 2
-        if self.use_cnn:
+        elif self.dataset == 'tiny_imagenet':
+            self.d = 64*64*3
+            self.input_shape = (64, 64)
+            self.num_classes = 200
+            self.in_channels = 3
+        elif self.dataset == 'imagenet':
+            self.d = 256*256*3
+            self.input_shape = (256, 256)
+            self.num_classes = 1000
+            self.in_channels = 3
+
+        if self.use_cnn and self.arch != 'densenet' and self.arch != 'wresnet' and self.arch != 'alexnet':
             d_arch = '{}_{}'.format(self.arch, self.dataset)
             self.net = CNN(arch=d_arch, embedding=self.embedding, in_channels=self.in_channels,
                 num_classes=self.num_classes)
+        elif self.arch == 'densenet':
+            self.net = torch.hub.load("chenyaofo/pytorch-cifar-models", "cifar10_resnet20", pretrained=True) 
+        elif self.arch == 'wresnet':
+            self.net = WideResNet(28, 10, 10)
+            self.net.eval()
+        elif self.arch == 'alexnet':
+            self.net = torchvision.models.alexnet(num_classes=self.num_classes)
         else:
             self.net = NN(self.d, 256, self.num_classes, linear=False) 
         if use_maini_cnn:
@@ -90,15 +127,122 @@ class Trainer(object):
             self.maini_attack = True
         else:
             self.maini_attack = False
+        self.maini_attack = True # TODO(dbthaker): REMOVEEEEE
         if self.embedding == 'scattering':
-            self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
+            #self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
+            self.scattering = utils.ScatteringTransform(J=2, shape=self.input_shape)
+            if use_pca:
+                self.decoder_num_in_channels = 10
+            else:
+                self.decoder_num_in_channels = self.scattering(self.train_dataset[0][0]).shape[0]
+            self.decoder_hidden_dim = self.decoder_num_in_channels
+            self.decoder = Generator(self.decoder_num_in_channels, self.decoder_hidden_dim, num_output_channels=self.in_channels)
+            self.pca = PCA(n_components=490)
         elif self.embedding == 'warp':
             self.warp = Warp(self.d)
-        if torch.cuda.is_available():
-            self.net = self.net.cuda()
+        elif self.embedding == 'gan':
+            self.decoder = DCGenerator(1, nc=self.in_channels)
+            #self.encoder = NN(self.d, 256, 100, linear=False) 
+            self.encoder = nn.Identity()
+        elif self.embedding == 'studiogan':
+            self.decoder = StudioGenerator(128, 32, 64)
+            self.encoder = nn.Identity()
+        elif self.embedding == 'wgan':
+            self.decoder = WGANGenerator(input_dim=62, input_size=28)
+            self.encoder = nn.Identity()
+        elif self.embedding == 'stylegan_xl':
+            assert self.dataset == 'cifar'
+            network_name = "cifar10.pkl"
+
+            with dnnlib.util.open_url(network_name) as f:
+                arch = legacy.load_network_pkl(f)
+                self.decoder  = arch['G_ema']
+                #D = arch['D'].to(device)
+                self.decoder = self.decoder.eval()
+            self.encoder = nn.Identity()
+        else:
+            self.decoder = nn.Identity()
+            self.encoder = nn.Identity()
+
+        self.train_loader, self.test_loader = self.preprocess_data()
         self.loss_fn = nn.CrossEntropyLoss()
         #self.loss_fn = nn.MultiMarginLoss()
-        self.train_loader, self.test_loader = self.preprocess_data()
+        if torch.cuda.is_available():
+            self.net = self.net.cuda()
+            self.encoder = self.encoder.cuda()
+            self.decoder = self.decoder.cuda()
+
+    def train_encoder(self):
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        #criterion = lpips.LPIPS(net='vgg').to(device)
+        #criterion = torch.nn.L1Loss()
+        criterion = torch.nn.MSELoss()
+        #optimizer = torch.optim.SGD(self.encoder.parameters(), lr=0.1, momentum=0.7)
+        optimizer = torch.optim.Adam(self.encoder.parameters())
+
+        self.decoder.eval()
+        for idx_epoch in range(self.args.encoder_num_epochs):
+            ct = 1
+            losses = list()
+            for _, current_batch in enumerate(self.train_loader):
+                optimizer.zero_grad()
+                batch_images = Variable(current_batch[0]).float().to(device)
+                batch_encoded = self.encoder(batch_images.flatten(1)).unsqueeze(2).unsqueeze(3)
+                batch_recon = self.decoder(batch_encoded)
+                #loss = torch.mean(criterion(batch_recon, batch_images))
+                loss = criterion(batch_recon, batch_images)
+                loss.backward()
+                losses.append(loss.item())
+                ct += 1
+                optimizer.step()
+            print("[{}] Loss: {}".format(idx_epoch, np.sum(losses) / ct))
+        save_path = 'files/pretrained_encoder_{}_{}.pth'.format(self.arch, self.dataset)
+        torch.save(self.encoder.state_dict(), save_path)
+
+    def train_decoder(self, use_pca=False):
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        criterion = torch.nn.L1Loss()
+        #criterion = torch.nn.L2Loss()
+        optimizer = torch.optim.Adam(self.decoder.parameters())
+
+        if use_pca:
+            Ds = pickle.load(open('files/Ds_mnist_inf.pkl', 'rb'))
+            self.pca.fit(Ds.T)
+        for idx_epoch in range(self.args.decoder_num_epochs):
+            #print('Training epoch {}'.format(idx_epoch))
+            ct = 1
+            losses = list()
+            for _, current_batch in enumerate(self.train_loader):
+                self.decoder.zero_grad()
+                batch_images = Variable(current_batch[0]).float().to(device)
+                batch_scattering = self.scattering(batch_images).squeeze(1)
+                if use_pca:
+                    N = batch_scattering.shape[0]
+                    batch_scattering = batch_scattering.flatten(1)
+                    batch_scattering = self.pca.transform(batch_scattering.cpu().numpy())
+                    batch_scattering = torch.from_numpy(batch_scattering.reshape((N, 10, 7, 7)))
+                if torch.cuda.is_available():
+                    batch_scattering = batch_scattering.cuda()
+                batch_inverse_scattering = self.decoder(batch_scattering)
+                loss = criterion(batch_inverse_scattering, batch_images)
+                loss.backward()
+                losses.append(loss.item())
+                ct += 1
+                optimizer.step()
+            print("[{}] Loss: {}".format(idx_epoch, np.sum(losses) / ct))
+        
+        save_path = 'files/decoder_scattering_{}.pth'.format(self.args.dataset)
+        torch.save(self.decoder.state_dict(), save_path)
+        print("Saved decoder model to {}".format(save_path))
+
+    def test_decoder(self):
+        Ds = pickle.load(open('files/gan_Ds_mnist.pkl', 'rb'))
+        #pca_Ds = self.pca.fit_transform(Ds.T)
+        #test_ex = pca_Ds[0, :].reshape((1, 10, 7, 7))
+        test_ex = Ds[0, :].reshape((1, 100, 1, 1))
+        set_trace() 
+        decoder_out = self.decoder(torch.from_numpy(test_ex).cuda()).cpu().detach().numpy()
+        pickle.dump(decoder_out, open('decoder_outs/test_ex.pkl', 'wb'))
 
     def load_model(self, model_name):
         device_id = 0
@@ -126,6 +270,8 @@ class Trainer(object):
             self.train_dataset = utils.YaleDataset(raw_train_X, self.train_y, transform=transform)
             self.test_dataset = utils.YaleDataset(raw_test_X, self.test_y, transform=transform)
         elif self.dataset == 'cifar':
+            #transform = transforms.Compose(
+            #        [transforms.ToTensor(), transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
             self.train_dataset = torchvision.datasets.CIFAR10('files/', train=True, \
                 download=True, transform=transform)
             self.test_dataset = torchvision.datasets.CIFAR10('files/', train=False, \
@@ -135,6 +281,16 @@ class Trainer(object):
                 download=True, transform=transform) 
             self.test_dataset = torchvision.datasets.MNIST('files/', train=False, \
                 download=True, transform=transform)
+        elif self.dataset == 'fashionmnist':
+            self.train_dataset = torchvision.datasets.FashionMNIST('files/', train=True, \
+                download=True, transform=transform)
+            self.test_dataset = torchvision.datasets.FashionMNIST('files/', train=False, \
+                download=True, transform=transform)
+        elif self.dataset == 'imagenet':
+            train_dir = 'files/tiny-imagenet-200/train'
+            test_dir = 'files/tiny-imagenet-200/val'
+            self.train_dataset = torchvision.datasets.ImageFolder(train_dir, transform=transform)
+            self.test_dataset = torchvision.datasets.ImageFolder(test_dir, transform=transform)
         elif self.dataset == 'synthetic':
             subspace_dim = 50
             block_size = utils.SIZE_MAP[self.dataset]
@@ -236,7 +392,7 @@ class Trainer(object):
         torch.save(self.net.state_dict(), save_path)
         print("Saved model to {}".format(save_path))
 
-    def evaluate(self, test=True, given_examples=None):
+    def evaluate(self, test=True, given_examples=None, normalize=True):
         if test:
             data_loader = self.test_loader
         else:
@@ -251,12 +407,22 @@ class Trainer(object):
                 if given_examples is not None:
                     bx = torch.from_numpy(bx)
                     by = torch.from_numpy(by)
-                if not self.use_cnn:
+                if not self.use_cnn and self.arch != 'densenet' and self.arch != 'wresnet':
                     bx = bx.squeeze()
                     bx = bx.flatten(1)
                 if torch.cuda.is_available():
                     bx = bx.cuda()
                     by = by.cuda()
+                if self.dataset == 'cifar' and self.arch == 'wresnet' and normalize:
+                    normalize_transform = transforms.Normalize(mean=[x/255.0 for x in [125.3, 123.0, 113.9]],
+                                     std=[x/255.0 for x in [63.0, 62.1, 66.7]])
+                    #normalize = transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+                    bx = normalize_transform(bx)
+                if self.dataset == 'tiny_imagenet' and self.arch == 'alexnet' and normalize:
+                    transform_mean = np.array([ 0.485, 0.456, 0.406 ])
+                    transform_std = np.array([ 0.229, 0.224, 0.225 ])
+                    normalize_transform = transforms.Normalize(mean=transform_mean, std=transform_std)
+                    bx = normalize_transform(bx)
                 output = self.net.forward(bx.float())
                 pred = output.data.argmax(1)
                 num_correct += pred.eq(by.data.view_as(pred)).sum().item()
@@ -266,12 +432,14 @@ class Trainer(object):
             acc = num_correct / len(data_loader.dataset) * 100.
         return acc
 
-    def compute_train_dictionary(self, normalize_cols=True):
+    def compute_train_dictionary(self, normalize_cols=True, return_raw=False, use_pca=False):
         train = self.train_full
         dictionary = list()
+        raw_dict = list()
         for pid in range(len(train)):
             for i in range(train[pid].shape[0]):
                 x = train[pid][i, :]
+                raw_dict.append(x.reshape(-1))
                 if self.embedding is None or self.embedding == 'warp':
                     dictionary.append(x.reshape(-1))
                 elif self.embedding == 'scattering':
@@ -280,16 +448,23 @@ class Trainer(object):
                         x = x.cuda()
                     embed_x = self.scattering(x).cpu().detach().numpy()
                     dictionary.append(embed_x.reshape(-1))
-                #elif self.embedding == 'warp':
-                #    x = x.reshape(-1)
-                #    embed_x = self.warp(x)
-                #    dictionary.append(embed_x.reshape(-1))
-                       
-        dictionary = np.vstack(dictionary).T
-        if normalize_cols:
-            return normalize(dictionary, axis=0)
+
+        if use_pca:
+            A = np.array(dictionary)
+            dictionary = self.pca.fit_transform(A).T
         else:
-            return dictionary
+            dictionary = np.vstack(dictionary).T
+        raw_dict = np.vstack(raw_dict).T
+        if normalize_cols:
+            if return_raw:
+                return normalize(dictionary, axis=0), normalize(raw_dict, axis=0)
+            else:
+                return normalize(dictionary, axis=0)
+        else:
+            if return_raw:
+                return dictionary, raw_dict
+            else:
+                return dictionary
 
     @utils.timing
     def compute_lp_dictionary(self, eps, lp, block=False, net=None, lp_variant=None):
@@ -305,7 +480,7 @@ class Trainer(object):
             bx = bx.cuda()
             by = by.cuda()
 
-        step = 2000
+        step = 200
         dictionary = list()
         if net is not None:
             print("USING SOME CNN")
@@ -318,7 +493,8 @@ class Trainer(object):
         for i in range(0, bx.shape[0], step):
             batch_x = bx[i:i+step]
             batch_y = by[i:i+step]
-            out = self._lp_attack(lp, eps, batch_x, batch_y, only_delta=True, net=net, lp_variant=lp_variant)
+            out = self._lp_attack(lp, eps, batch_x, batch_y, only_delta=True, net=net, lp_variant=lp_variant, is_test=False)
+            print("ONE BATCH DONE")
             out = out.reshape((out.shape[0], -1))
             dictionary.append(out)
         dictionary = np.concatenate(dictionary)
@@ -333,7 +509,8 @@ class Trainer(object):
         except:
             set_trace()
 
-    def _lp_attack(self, lp, eps, bx, by, only_delta=False, net=None, lp_variant=None):
+    def _lp_attack(self, lp, eps, bx, by, only_delta=False, net=None, lp_variant=None, \
+            is_test=True):
         if eps == 0:
             if only_delta:
                 return (bx - bx).detach().numpy()
@@ -355,39 +532,57 @@ class Trainer(object):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-        if lp == np.infty: 
+        if lp == np.infty and lp_variant is None: 
+            if is_test:
+                num_iter = 100
+                restarts = 10
+            else:
+                num_iter = 40
+                restarts = 1
             adversary = LinfPGDAttack(
                 net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
-                nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
+                nb_iter=num_iter, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
                 targeted=False)
             if self.maini_attack:
-                delta = utils.pgd_linf(net, bx, by, restarts=10, num_iter=100, epsilon=eps)
+                delta = utils.pgd_linf(net, bx, by, restarts=restarts, num_iter=num_iter, epsilon=eps)
                 if only_delta:
                     out = delta
                 else:
                     out = bx + delta
                 out = out.cpu().detach().numpy()
                 return out
-        elif lp == 2 and lp_variant is None:
+        elif lp == 2 and lp_variant is None: 
+            if is_test:
+                num_iter = 500
+                restarts = 10
+            else:
+                num_iter = 50
+                restarts = 1
             adversary = L2PGDAttack(
                 net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
-                nb_iter=200, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
+                nb_iter=num_iter, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
                 targeted=False)
             if self.maini_attack:
-                delta = utils.pgd_l2(net, bx, by, restarts=10, num_iter=200, epsilon=eps)
+                delta = utils.pgd_l2(net, bx, by, restarts=restarts, num_iter=num_iter, epsilon=eps)
                 if only_delta:
                     out = delta
                 else:
                     out = bx + delta
                 out = out.cpu().detach().numpy()
                 return out
-        elif lp == 1:
+        elif lp == 1 and lp_variant is None:
+            if is_test:
+                num_iter = 100
+                restarts = 10
+            else:
+                num_iter = 50
+                restarts = 1
             adversary = SparseL1DescentAttack(
                 net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
-                nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
+                nb_iter=num_iter, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
                 targeted=False)
             if self.maini_attack:
-                delta = utils.pgd_l1_topk(net, bx, by, restarts=10, num_iter=100, epsilon=eps)
+                delta = utils.pgd_l1_topk(net, bx, by, restarts=restarts, num_iter=num_iter, epsilon=eps)
                 if only_delta:
                     out = delta
                 else:
@@ -398,6 +593,16 @@ class Trainer(object):
             adversary = CarliniWagnerL2Attack(
                 net, num_classes=self.num_classes, learning_rate=step_size, \
                 max_iterations=100)
+        if self.dataset == 'cifar' and self.arch == 'wresnet':
+            normalize = transforms.Normalize(mean=[x/255.0 for x in [125.3, 123.0, 113.9]],
+                             std=[x/255.0 for x in [63.0, 62.1, 66.7]])
+            bx = normalize(bx)
+        if self.dataset == 'tiny_imagenet' and self.arch == 'alexnet' and normalize:
+            transform_mean = np.array([ 0.485, 0.456, 0.406 ])
+            transform_std = np.array([ 0.229, 0.224, 0.225 ])
+            normalize_transform = transforms.Normalize(mean=transform_mean, std=transform_std)
+            bx = normalize_transform(bx)
+
         out = adversary.perturb(bx, by)
         if only_delta:
             out = out - bx
