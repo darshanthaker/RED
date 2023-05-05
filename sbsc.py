@@ -164,7 +164,14 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     """
 
     np.random.seed(0)
-<<<<<<< HEAD
+    raw_Ds = trainer.compute_train_dictionary()
+    if trainer.embedding == 'warp':
+        Ds = trainer.warp(raw_Ds)
+    elif trainer.embedding == 'scattering':
+        Ds = raw_Ds
+    else:
+        Ds = raw_Ds
+    raw_Da = np.hstack(attack_dicts)
     #Da = np.hstack(attack_dicts)
     #pickle.dump(Da, open('files/Da_{}_maini.pkl'.format(args.dataset), 'wb'))
     #if use_gan_Ds:
