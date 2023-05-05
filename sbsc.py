@@ -154,19 +154,22 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     #eps = 0
 
     #print("UNATTACKED EXAMPLES TAKE NOTE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    """
     attack_dicts = list()
     for attack in toolchain:
         if use_cnn_for_dict:
             attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack, net='cnn'))
         else:
             attack_dicts.append(trainer.compute_lp_dictionary(eps_map[attack], attack))
+    """
 
     np.random.seed(0)
-    Da = np.hstack(attack_dicts)
-    pickle.dump(Da, open('files/Da_{}_random.pkl'.format(args.dataset), 'wb'))
+    #Da = np.hstack(attack_dicts)
+    #pickle.dump(Da, open('files/Da_{}_maini.pkl'.format(args.dataset), 'wb'))
     #if use_gan_Ds:
     #    Ds = pickle.load(open('files/Ds_{}_inf.pkl'.format(args.dataset), 'rb'))
-    #Da = pickle.load(open('files/Da_{}.pkl'.format(args.dataset), 'rb'))
+    Ds = pickle.load(open('files/raw_Ds_cifar_inf.pkl', 'rb'))
+    Da = pickle.load(open('files/Da_{}_maini.pkl'.format(args.dataset), 'rb'))
     dst = trainer.dataset
     sz = utils.SIZE_MAP[dst]
     """
@@ -218,9 +221,12 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     sz = utils.SIZE_MAP[dst]
     num_attacks = len(toolchain)
     
+    test_adv = pickle.load(open('files/test_adv_{}_{}_maini.pkl'.format(args.dataset, test_lp), 'rb'))
     if test_adv is None:
         test_adv = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant)
         #delta = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant, only_delta=True)
+
+    #pickle.dump(test_adv, open('files/test_adv_{}_{}_maini.pkl'.format(args.dataset, test_lp), 'wb'))
 
     acc = trainer.evaluate(given_examples=(test_adv, test_y), normalize=False)
     print("[L{}, variant={}, eps={}] Adversarial accuracy: {}%".format(test_lp, lp_variant, eps, acc))
@@ -239,8 +245,8 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         corrupted_x = test_adv[t, :]
         ty = torch.from_numpy(np.array(test_y[t:t+1]))
         print("ty = {}, lp = {}".format(ty, test_lp))
-        print("not normalizing Ds!!!")
-        #Ds = normalize(Ds, axis=0)
+        #print("not normalizing Ds!!!")
+        Ds = normalize(Ds, axis=0)
         Da = normalize(Da, axis=0)
         x = corrupted_x.reshape(-1)
         #pickle.dump(raw_x, open('decoder_outs_adv_linf_cifar/{}/raw_x.pkl'.format(t), 'wb'))

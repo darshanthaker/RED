@@ -4,12 +4,18 @@ import os
 import pickle
 import scipy.io
 import torch
+import torch.optim as optim
 import torchvision
 import torch.nn as nn
 import utils
 import copy
 import baselines
 import lpips
+
+# Importing from stylegan_xl
+sys.path.insert(0, '/cis/home/dbthaker/dev/research/stylegan_xl')
+import legacy
+import dnnlib
 
 from sklearn.preprocessing import normalize
 from sklearn.decomposition import PCA
@@ -121,6 +127,7 @@ class Trainer(object):
             self.maini_attack = True
         else:
             self.maini_attack = False
+        self.maini_attack = True # TODO(dbthaker): REMOVEEEEE
         if self.embedding == 'scattering':
             #self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
             self.scattering = utils.ScatteringTransform(J=2, shape=self.input_shape)
@@ -142,6 +149,16 @@ class Trainer(object):
             self.encoder = nn.Identity()
         elif self.embedding == 'wgan':
             self.decoder = WGANGenerator(input_dim=62, input_size=28)
+            self.encoder = nn.Identity()
+        elif self.embedding == 'stylegan_xl':
+            assert self.dataset == 'cifar'
+            network_name = "cifar10.pkl"
+
+            with dnnlib.util.open_url(network_name) as f:
+                arch = legacy.load_network_pkl(f)
+                self.decoder  = arch['G_ema']
+                #D = arch['D'].to(device)
+                self.decoder = self.decoder.eval()
             self.encoder = nn.Identity()
         else:
             self.decoder = nn.Identity()
@@ -463,7 +480,7 @@ class Trainer(object):
             bx = bx.cuda()
             by = by.cuda()
 
-        step = 2000
+        step = 200
         dictionary = list()
         if net is not None:
             print("USING SOME CNN")
@@ -476,7 +493,8 @@ class Trainer(object):
         for i in range(0, bx.shape[0], step):
             batch_x = bx[i:i+step]
             batch_y = by[i:i+step]
-            out = self._lp_attack(lp, eps, batch_x, batch_y, only_delta=True, net=net, lp_variant=lp_variant)
+            out = self._lp_attack(lp, eps, batch_x, batch_y, only_delta=True, net=net, lp_variant=lp_variant, is_test=False)
+            print("ONE BATCH DONE")
             out = out.reshape((out.shape[0], -1))
             dictionary.append(out)
         dictionary = np.concatenate(dictionary)
@@ -491,7 +509,8 @@ class Trainer(object):
         except:
             set_trace()
 
-    def _lp_attack(self, lp, eps, bx, by, only_delta=False, net=None, lp_variant=None):
+    def _lp_attack(self, lp, eps, bx, by, only_delta=False, net=None, lp_variant=None, \
+            is_test=True):
         if eps == 0:
             if only_delta:
                 return (bx - bx).detach().numpy()
@@ -514,12 +533,18 @@ class Trainer(object):
         torch.backends.cudnn.benchmark = False
 
         if lp == np.infty and lp_variant is None: 
+            if is_test:
+                num_iter = 100
+                restarts = 10
+            else:
+                num_iter = 40
+                restarts = 1
             adversary = LinfPGDAttack(
                 net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
-                nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
+                nb_iter=num_iter, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
                 targeted=False)
             if self.maini_attack:
-                delta = utils.pgd_linf(net, bx, by, restarts=10, num_iter=100, epsilon=eps)
+                delta = utils.pgd_linf(net, bx, by, restarts=restarts, num_iter=num_iter, epsilon=eps)
                 if only_delta:
                     out = delta
                 else:
@@ -527,12 +552,18 @@ class Trainer(object):
                 out = out.cpu().detach().numpy()
                 return out
         elif lp == 2 and lp_variant is None: 
+            if is_test:
+                num_iter = 500
+                restarts = 10
+            else:
+                num_iter = 50
+                restarts = 1
             adversary = L2PGDAttack(
                 net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
-                nb_iter=200, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
+                nb_iter=num_iter, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
                 targeted=False)
             if self.maini_attack:
-                delta = utils.pgd_l2(net, bx, by, restarts=10, num_iter=200, epsilon=eps)
+                delta = utils.pgd_l2(net, bx, by, restarts=restarts, num_iter=num_iter, epsilon=eps)
                 if only_delta:
                     out = delta
                 else:
@@ -540,12 +571,18 @@ class Trainer(object):
                 out = out.cpu().detach().numpy()
                 return out
         elif lp == 1 and lp_variant is None:
+            if is_test:
+                num_iter = 100
+                restarts = 10
+            else:
+                num_iter = 50
+                restarts = 1
             adversary = SparseL1DescentAttack(
                 net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
-                nb_iter=100, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
+                nb_iter=num_iter, eps_iter=step_size, rand_init=True, clip_min=0, clip_max=1,
                 targeted=False)
             if self.maini_attack:
-                delta = utils.pgd_l1_topk(net, bx, by, restarts=10, num_iter=100, epsilon=eps)
+                delta = utils.pgd_l1_topk(net, bx, by, restarts=restarts, num_iter=num_iter, epsilon=eps)
                 if only_delta:
                     out = delta
                 else:

@@ -11,6 +11,8 @@ import torch.nn as nn
 import copy
 import sbsc
 
+torch.set_num_threads(1)
+
 from pdb import set_trace
 from trainer import Trainer
 from train_embedding import EmbeddingTrainer
@@ -218,6 +220,8 @@ def sbsc_test(args):
         trainer.decoder.load_state_dict(torch.load('files/netG_{}.pth'.format(args.dataset), map_location=torch.device('cpu'))['state_dict'])
     elif args.embedding == 'gan' or args.embedding == 'wgan':
         trainer.decoder.load_state_dict(torch.load('files/netG_{}.pth'.format(args.dataset), map_location=torch.device('cpu')))
+    elif args.embedding == 'stylegan_xl':
+        pass
     else:
         print("No decoder loaded!!")
     test_acc = trainer.evaluate(test=True)

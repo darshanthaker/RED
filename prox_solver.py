@@ -183,6 +183,7 @@ class ProxSolver(object):
             #else:
             #    v = (x - decoder_out).reshape(self.input_shape)[None, :]
             v = (x - decoder_out).reshape(self.input_shape)[None, None, :]
+            #v = (x - decoder_out)
             v = torch.from_numpy(v)
             if torch.cuda.is_available():
                 v = v.cuda()
@@ -223,12 +224,12 @@ class ProxSolver(object):
             print("CHEATING USING LABEL!!!!")
             cs_est_i = np.random.randn(self.block_size)
             cs_est = self.sig_bi.set_block(cs_est, cheat_y, cs_est_i)
-        lip_s = 76594
+        #lip_s = 76594
         #lip_s = 100
-        #lip_s = np.linalg.norm(self.Ds @ self.Ds.T, ord=2)
-        #lip_a = np.linalg.norm(self.Da @ self.Da.T, ord=2)
+        lip_s = np.linalg.norm(self.Ds @ self.Ds.T, ord=2)
+        lip_a = np.linalg.norm(self.Da @ self.Da.T, ord=2)
         #lip_a = 2092
-        lip_a = lip_s
+        #lip_a = lip_s
         grad_clip_norm = 10
         if eta_s is None:
             eta_s = 1.0 / lip_s
@@ -247,7 +248,7 @@ class ProxSolver(object):
         #self.lambda1 = (sig_norms[0] + sig_norms[1]) / 2
         #self.lambda2 = (att_norms[0] + att_norms[1]) /  2
         self.lambda1 = sig_norms[0] / 4
-        self.lambda1 = 500
+        #self.lambda1 = 500
         #self.lambda1 = sig_norms[0] / 1.5
         self.lambda2 = att_norms[0] / 4
         #self.lambda2 = 10
@@ -296,11 +297,14 @@ class ProxSolver(object):
             #print("norm g(phi ds cs): {}".format(np.linalg.norm(decoder_out)))
             #print("norm da ca: {}".format(np.linalg.norm(self.Da @ ca_est)))
             decoder_outs.append(decoder_out.reshape(self.input_shape)[None, :])
+            """
             if self.input_shape[0] == 1:
                 v = (x - decoder_out - self.Da @ ca_est).reshape(self.input_shape)[None, None, :]
             else:
                 v = (x - decoder_out - self.Da @ ca_est).reshape(self.input_shape)[None, :]
-            v = (x - decoder_out).reshape((1, 1, 28, 28))
+            """
+            v = (x - decoder_out - self.Da @ ca_est).reshape(self.input_shape)[None, None, :]
+            #v = (x - decoder_out)
             v = torch.from_numpy(v)
             if torch.cuda.is_available():
                 v = v.cuda()

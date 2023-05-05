@@ -182,7 +182,7 @@ class BlockSparseActiveSetSolver(object):
     def get_decoder_Ds_cs(self, Ds, cs_est):
         torch_inp = torch.from_numpy(np.asarray(Ds @ cs_est, dtype=np.float32))
         # TODO(dbthaker): Put back first line. - DONE.
-        torch_inp = torch_inp.reshape((1, 81, 7, 7))
+        #torch_inp = torch_inp.reshape((1, 81, 7, 7))
         #torch_inp = torch_inp.reshape((1, 1, 28, 28))
         if torch.cuda.is_available():
             torch_inp = torch_inp.cuda()
@@ -199,7 +199,8 @@ class BlockSparseActiveSetSolver(object):
             # TODO(dbthaker): Double Check.
             torch_inp, decoder_out = self.get_decoder_Ds_cs(Ds_a, cs_a)
             embed_d = Ds_i.shape[0]
-            v = torch.from_numpy((x - decoder_out).reshape((1, 1, 28, 28)))
+            #v = torch.from_numpy((x - decoder_out).reshape((1, 1, 28, 28)))
+            v = torch.from_numpy((x - decoder_out))
             if torch.cuda.is_available():
                 v = v.cuda()
             _, vjp = torch.autograd.functional.vjp(self.decoder, torch_inp, v=v, strict=True)
@@ -264,8 +265,9 @@ class BlockSparseActiveSetSolver(object):
             #cs_est_blocks, ca_est_blocks = self._elastic_net_solver(x, Ds_est, Da_est, gamma_s, gamma_a, sig_active_set, att_active_set)
             Ds_a = self.get_active_blocks(Ds_est, self.sig_bi, sig_active_set)
             Da_a = self.get_active_blocks(Da_est, self.hier_bi, sig_active_set, hier_active_set=att_active_set)
+            input_shape = (3, 32, 32)
             prox_solver = ProxSolver(Ds_a, Da_a, self.decoder, len(sig_active_set), len(att_active_set), \
-                    self.block_size, lambda1=gamma_s, lambda2=gamma_a) 
+                    self.block_size, input_shape, lambda1=gamma_s, lambda2=gamma_a) 
             cs_est_blocks, ca_est_blocks, _, _, _ = prox_solver.solve_coef(x)
             active_sig_bi = BlockIndexer(self.block_size, [len(sig_active_set)])
             active_hier_bi = BlockIndexer(self.block_size, [len(sig_active_set), len(att_active_set)])
@@ -408,4 +410,5 @@ class BlockSparseActiveSetSolver(object):
         Ds_blk = self.sig_bi.get_block(Ds_est, class_pred)
         cs_blk = self.sig_bi.get_block(cs_est, class_pred)
         denoised = Ds_blk@cs_blk
+        denoised = denoised.reshape((3, 32, 32))
         return cs_est, ca_est, Ds_est, Da_est, class_pred, attack_pred, denoised, err_attack
