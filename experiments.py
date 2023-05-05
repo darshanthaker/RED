@@ -12,6 +12,7 @@ import copy
 import sbsc
 
 from pdb import set_trace
+from train_embedding import EmbeddingTrainer
 from trainer import Trainer
 from irls import BlockSparseIRLSSolver
 
@@ -46,9 +47,31 @@ def eps_plot():
     atts = ['l2', 'l1', 'linf']
     att_map = {'l2': 2, 'linf': np.inf}
     result_map = {'l2': {'signal': [], 'att': [], 'test': [], 'backtest': [], 'baseline': []}, 
+                  'l1': {'signal': [], 'att': [], 'test': [], 'backtest': [], 'baseline': []}, 
                   'linf': {'signal': [], 'att': [], 'test': [], 'backtest': [], 'baseline': []}}
 
+    result_map['linf']['eps'] = [0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30]
+    result_map['linf']['signal'] = pickle.load(open('active_outs/signal_accs_inf_mnist.pkl', 'rb'))
+    result_map['linf']['att'] = pickle.load(open('active_outs/attack_accs_inf_mnist.pkl', 'rb'))
+    result_map['linf']['test'] = pickle.load(open('active_outs/adv_accs_inf_mnist.pkl', 'rb'))
+    result_map['linf']['backtest'] = pickle.load(open('active_outs/denoised_accs_inf_mnist.pkl', 'rb'))
+    result_map['linf']['baseline'] = [92, 84, 82, 73, 72, 66, 54]
+    result_map['l1']['eps'] = [0, 1.5, 3, 5, 6.5, 8, 10]
+    result_map['l1']['signal'] = pickle.load(open('active_outs/signal_accs_1.0_mnist.pkl', 'rb'))
+    result_map['l1']['att'] = pickle.load(open('active_outs/attack_accs_1.0_mnist.pkl', 'rb'))
+    result_map['l1']['test'] = pickle.load(open('active_outs/adv_accs_1.0_mnist.pkl', 'rb'))
+    result_map['l1']['backtest'] = pickle.load(open('active_outs/denoised_accs_1.0_mnist.pkl', 'rb'))
+    result_map['l1']['baseline'] = [92, 87, 84, 83, 81, 78, 75]
+    result_map['l2']['eps'] =[0, 0.3, 0.6, 1, 1.3, 1.6, 2]
+    result_map['l2']['signal'] = pickle.load(open('active_outs/signal_accs_2.0_mnist.pkl', 'rb'))
+    result_map['l2']['att'] = pickle.load(open('active_outs/attack_accs_2.0_mnist.pkl', 'rb'))
+    result_map['l2']['test'] = pickle.load(open('active_outs/adv_accs_2.0_mnist.pkl', 'rb'))
+    result_map['l2']['backtest'] = pickle.load(open('active_outs/denoised_accs_2.0_mnist.pkl', 'rb'))
+    result_map['l2']['baseline'] = [92, 89, 85, 84, 81, 79, 76]
+    set_trace()
+
     ## MNIST
+    """
     result_map = {'linf': {'eps': [0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30], 
                            'signal': [94, 89, 85, 82, 73, 63, 56],
                            'att': [24, 50, 88, 93, 92, 91, 86],
@@ -68,7 +91,6 @@ def eps_plot():
                            'backtest': [94, 93, 90, 85, 85, 85, 82],
                            'baseline': [92, 87, 84, 83, 81, 78, 75]}}
 
-    """
     result_map = {'linf': {'eps': [0, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1], 
                            'signal': [95, 94, 93, 92, 87, 86, 81],
                            'att': [40, 77, 95, 98, 99, 99],
@@ -134,14 +156,14 @@ def eps_plot():
 
     fig, axes = plt.subplots(1, 3, figsize=(6.4*3, 4.8))
     dual_axes = list()
-    attacks = ['linf']
-    #attacks = ['l1', 'l2', 'linf']
+    #attacks = ['linf']
+    attacks = ['l1', 'l2', 'linf']
     for (ax1, att) in zip(axes, attacks):
         #fig, ax1 = plt.subplots()
         ax2 = ax1.twinx()
         dual_axes.append(ax2)
         ax1.plot(result_map[att]['eps'], result_map[att]['signal'], label='SBSC', marker='*', markersize=7)
-        #ax2.plot(result_map[att]['eps'], result_map[att]['att'], label='SBSAD', linestyle='--', marker='s', color='black', markerfacecolor='none')
+        ax2.plot(result_map[att]['eps'], result_map[att]['att'], label='SBSAD', linestyle='--', marker='s', color='black', markerfacecolor='none')
         ax1.plot(result_map[att]['eps'], result_map[att]['test'], label='No Defense', marker='*', markersize=7)
         ax1.plot(result_map[att]['eps'], result_map[att]['backtest'], label='SBSC+CNN', marker='*', markersize=7)
         ax1.plot(result_map[att]['eps'], result_map[att]['baseline'], label='BSC', marker='*', markersize=7)
@@ -152,14 +174,21 @@ def eps_plot():
         #ax2.legend(prop={'size': 9}, handlelength=3)
         ax1.grid()
         ax1.set_yticks(np.arange(0, 101, 10))
-        #ax2.set_yticks(np.arange(0, 101, 10))
+        ax2.set_yticks(np.arange(0, 101, 10))
         ax1.set_xlabel('{} Epsilon'.format(att))
     #fig.set_xlabel('Epsilon of Perturbation')
     #fig.set_ylabel('Signal Classification Accuracy')
     #fig.set_ylabel('Attack Detection Accuracy')
+    handles, labels = ax1.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='center left')
+    handles, labels = ax2.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='center right')
     axes[0].set_ylabel('Signal Classification Accuracy')
-    #dual_axes[-1].set_ylabel('Attack Detection Accuracy')
-    plt.savefig('signal_mnist_sitevisit.png')
+    dual_axes[-1].set_ylabel('Attack Detection Accuracy')
+    #dual_axes[-1].legend()
+    plt.savefig('all_mnist_active.png')
+    #plt.legend()
+    #plt.show()
         #ax1.cla()
         #ax2.cla()
         #fig.clf() 
@@ -225,6 +254,10 @@ def sbsc_maini_test(args):
     test_lp = args.test_lp
     sbsc.sbsc(trainer, args, eps, test_lp, use_cnn_for_dict=True)
 
+def embedding_train(args):
+    Ds = pickle.load(open('files/Ds_{}_unnorm.pkl'.format(args.dataset), 'rb'))
+    embed_trainer = EmbeddingTrainer(args, Ds)
+    embed_trainer.train()
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description='Experiments')
@@ -232,6 +265,7 @@ if __name__=='__main__':
     args = parser.parse_args()
 
     #sbsc_maini_test(args)
-    sbsc_test(args)
+    #sbsc_test(args)
     #eps_grid(args)
-    #eps_plot()
+    eps_plot()
+    #embedding_train(args)
