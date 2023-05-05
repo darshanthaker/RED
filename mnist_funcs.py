@@ -1,3 +1,4 @@
+# TAKEN FROM https://github.com/locuslab/robust_union/blob/master/MNIST/mnist_funcs.py
 import numpy as np
 # import matplotlib.pyplot as plt
 # import matplotlib
