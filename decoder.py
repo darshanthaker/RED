@@ -34,27 +34,44 @@ def initialize_weights(net):
 class WGANGenerator(nn.Module):
     # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
     # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
-    def __init__(self, input_dim=100, output_dim=1, input_size=32):
+    def __init__(self, input_dim=100, output_dim=1, input_size=32, smooth_relu=False):
         super(WGANGenerator, self).__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.input_size = input_size
 
-        self.fc = nn.Sequential(
-            nn.Linear(self.input_dim, 1024),
-            nn.BatchNorm1d(1024),
-            nn.ReLU(),
-            nn.Linear(1024, 128 * (self.input_size // 4) * (self.input_size // 4)),
-            nn.BatchNorm1d(128 * (self.input_size // 4) * (self.input_size // 4)),
-            nn.ReLU(),
-        )
-        self.deconv = nn.Sequential(
-            nn.ConvTranspose2d(128, 64, 4, 2, 1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.ConvTranspose2d(64, self.output_dim, 4, 2, 1),
-            nn.Tanh(),
-        )
+        if smooth_relu:
+            self.fc = nn.Sequential(
+                nn.Linear(self.input_dim, 1024),
+                nn.BatchNorm1d(1024),
+                nn.Softplus(beta=10),
+                nn.Linear(1024, 128 * (self.input_size // 4) * (self.input_size // 4)),
+                nn.BatchNorm1d(128 * (self.input_size // 4) * (self.input_size // 4)),
+                nn.Softplus(beta=10),
+            )
+            self.deconv = nn.Sequential(
+                nn.ConvTranspose2d(128, 64, 4, 2, 1),
+                nn.BatchNorm2d(64),
+                nn.Softplus(beta=10),
+                nn.ConvTranspose2d(64, self.output_dim, 4, 2, 1),
+                nn.Tanh(),
+            )
+        else:
+            self.fc = nn.Sequential(
+                nn.Linear(self.input_dim, 1024),
+                nn.BatchNorm1d(1024),
+                nn.ReLU(),
+                nn.Linear(1024, 128 * (self.input_size // 4) * (self.input_size // 4)),
+                nn.BatchNorm1d(128 * (self.input_size // 4) * (self.input_size // 4)),
+                nn.ReLU(),
+            )
+            self.deconv = nn.Sequential(
+                nn.ConvTranspose2d(128, 64, 4, 2, 1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+                nn.ConvTranspose2d(64, self.output_dim, 4, 2, 1),
+                nn.Tanh(),
+            )
         initialize_weights(self)
 
     def forward(self, input):

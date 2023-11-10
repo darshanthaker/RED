@@ -17,6 +17,8 @@ import utils
 import copy
 import argparse
 import multiprocessing
+import json
+import spams
 
 from cvxpy.atoms.norm import norm
 from cvxpy.atoms.affine.hstack import hstack
@@ -25,6 +27,7 @@ from pdb import set_trace
 from scipy.linalg import orth
 from scipy.sparse.linalg import svds
 from sklearn.preprocessing import normalize
+from sklearn.linear_model import OrthogonalMatchingPursuit
 from torchvision import transforms
 from skimage.transform import swirl
 from torch.utils.data import DataLoader, Dataset
@@ -36,6 +39,8 @@ from irls import BlockSparseIRLSSolver
 from active_set import BlockSparseActiveSetSolver
 from prox_solver import ProxSolver
 from prox_gan_solver import ProxGanSolver
+from clip_encoder import CLIPEncoder
+from PIL import Image
 from multiprocessing import Pool
 
 def serialize_dictionaries(trainer, args):
@@ -112,6 +117,204 @@ def baseline(trainer, test_adv, test_y):
     acc = sum(pred == test_y) / test_y.shape[0] * 100.
     return acc
 
+def clip_omp(trainer, train_x, train_y):
+    clip_enc = CLIPEncoder()
+
+    f = open('files/cifar10_CBM.txt', 'rb')
+    concepts = list()
+    for line in f:
+        concepts.append(line.rstrip().decode())
+
+    Ds_blocks = list()
+    for idx in range(0, len(concepts), 100):
+        end_idx = min(idx + 100, len(concepts))
+        Ds_blocks.append(clip_enc.encode_text(concepts[idx:end_idx]).cpu().detach().numpy())
+    Ds = np.concatenate(Ds_blocks).T
+    Ds = normalize(Ds, axis=0)
+
+    im = Image.fromarray((train_x[-1, :].transpose(1, 2, 0) * 255).astype(np.uint8))
+    x = clip_enc.encode_image(im).squeeze().cpu().detach().numpy()
+
+    class_coefs = list()
+    concept_dict = dict()
+    for lab in range(10):
+        raw_X = train_x[np.where(train_y == lab)]
+        enc_X = list()
+        for i in range(raw_X.shape[0]):
+            im = Image.fromarray((raw_X[i, :].transpose(1, 2, 0) * 255).astype(np.uint8))
+            x = clip_enc.encode_image(im).squeeze().cpu().detach().numpy()
+            enc_X.append(x)
+        X = np.asfortranarray(np.vstack(enc_X).T, dtype=np.float32)
+        Ds = np.asfortranarray(Ds, dtype=np.float32)
+        coef = spams.omp(X, Ds, L=20, eps=0.1).toarray()
+        class_coefs.append(np.mean(coef, axis=1))
+        print("Finished {}".format(lab))
+    for (lab, coef) in enumerate(class_coefs):
+        nz_idx = coef.nonzero()[0]
+        vals = sorted(zip(nz_idx, coef[nz_idx]), key=lambda pair: -pair[1])
+        vals = list(filter(lambda x: x[1] >= 0, vals))
+        filtered_concepts = [concepts[idx] for (idx, _) in vals][:20]
+        concept_dict[utils.LABEL_MAP['cifar'][lab]] = filtered_concepts
+        print("{}: {}".format(utils.LABEL_MAP['cifar'][lab], filtered_concepts))
+    json_object = json.dumps(concept_dict, indent=4)
+    with open ('files/cifar10_omp_concepts.json', 'w') as of:
+        of.write(json_object)
+
+
+def clip_ood(trainer, train_x, train_y, test_adv, test_y):
+    clip_enc = CLIPEncoder()
+    concepts = json.load(open('files/cifar10_omp_concepts.json', 'rb'))
+    Ds_blocks = list()
+    concept_lst = list()
+    block_idxs = [0]
+    for label_name in utils.LABEL_MAP['cifar']:
+        tmp = list()
+        concept_lst += concepts[label_name]
+        for idx in range(0, len(concepts[label_name]), 100):
+            end_idx = min(idx + 100, len(concepts[label_name]))
+            tmp.append(clip_enc.encode_text(concepts[label_name][idx:end_idx]).cpu().detach().numpy())
+        
+        Ds_blocks.append(np.concatenate(tmp))
+        block_idxs.append(block_idxs[-1] + Ds_blocks[-1].shape[0])
+    Ds = np.concatenate(Ds_blocks).T
+    Ds = normalize(Ds, axis=0)
+
+    s_len = Ds.shape[1]
+
+    class_coefs = list()
+    concept_dict = dict()
+    for lab in range(0):
+        raw_X = train_x[np.where(train_y == lab)]
+        enc_X = list()
+        for i in range(raw_X.shape[0]):
+            im = Image.fromarray((raw_X[i, :].transpose(1, 2, 0) * 255).astype(np.uint8))
+            x = clip_enc.encode_image(im).squeeze().cpu().detach().numpy()
+            enc_X.append(x)
+        X = np.asfortranarray(np.vstack(enc_X).T, dtype=np.float32)
+        Ds = np.asfortranarray(Ds, dtype=np.float32)
+        coef = spams.omp(X, Ds, L=20, eps=0.1).toarray()
+        class_coefs.append(np.mean(coef, axis=1))
+        print("Finished {}".format(lab))
+
+    enc_X = list()
+    ims = list()
+    for i in range(100):
+        im = Image.fromarray((test_adv[i, :].transpose(1, 2, 0) * 255).astype(np.uint8))
+        ims.append(im)
+        x = clip_enc.encode_image(im).squeeze().cpu().detach().numpy()
+        enc_X.append(x)
+    X = np.asfortranarray(np.vstack(enc_X).T, dtype=np.float32)
+    Ds = np.asfortranarray(Ds, dtype=np.float32)
+    coef = spams.omp(X, Ds, L=10, eps=0.1).toarray()
+    
+    coef_concepts = list()
+    for i in range(100):
+        opt = coef[:, i]
+        idx = np.where(opt >= 0.001)[0]
+        coef_concepts.append([concept_lst[j] for j in idx])
+
+    # Amplify reddish-brown coat in the bird, which is label 2.
+    mod_coef = np.copy(coef[:, 0])
+    mod_coef[15] = 5
+    mod_X_clip = Ds @ mod_coef
+    recon_X_clip = Ds @ coef[:, 0]
+
+    #raw_X = train_x[np.where(train_y == 2)]
+    raw_X = train_x
+    best_mod_sim = -np.float("inf")
+    best_sim = -np.float("inf")
+    nn_mod_im = None
+    nn_im = None
+    for i in range(raw_X.shape[0]):
+        im = Image.fromarray((raw_X[i, :].transpose(1, 2, 0) * 255).astype(np.uint8))
+        x = clip_enc.encode_image(im).squeeze().cpu().detach().numpy()
+        mod_sim = (x @ mod_X_clip) / (np.linalg.norm(x) * np.linalg.norm(mod_X_clip))
+        sim = (x @ recon_X_clip) / (np.linalg.norm(x) * np.linalg.norm(recon_X_clip))
+        if mod_sim > best_mod_sim:
+            best_mod_sim = mod_sim
+            nn_mod_im = im 
+        if sim > best_sim:
+            best_sim = sim
+            nn_im = im
+
+    im = Image.fromarray((test_adv[0, :].transpose(1, 2, 0) * 255).astype(np.uint8))
+    x = clip_enc.encode_image(im).squeeze().cpu().detach().numpy()
+    sim = (x @ recon_X_clip) / (np.linalg.norm(x) * np.linalg.norm(recon_X_clip))
+    set_trace()
+
+def clip_bsc(trainer, test_adv, test_y):
+    clip_enc = CLIPEncoder() 
+
+    #concepts = json.load(open('files/gpt3_cifar10_important.json', 'rb'))
+    concepts = json.load(open('files/cifar10_omp_concepts.json', 'rb'))
+    #concepts = json.load(open('files/cifar10_labo.json', 'rb'))
+    Ds_blocks = list()
+    concept_lst = list()
+    block_idxs = [0]
+    for label_name in utils.LABEL_MAP['cifar']:
+        tmp = list()
+        concept_lst += concepts[label_name]
+        for idx in range(0, len(concepts[label_name]), 100):
+            end_idx = min(idx + 100, len(concepts[label_name]))
+            tmp.append(clip_enc.encode_text(concepts[label_name][idx:end_idx]).cpu().detach().numpy())
+        
+        Ds_blocks.append(np.concatenate(tmp))
+        block_idxs.append(block_idxs[-1] + Ds_blocks[-1].shape[0])
+    Ds = np.concatenate(Ds_blocks).T
+
+    s_len = Ds.shape[1]
+
+    thres = 10
+    pred = list()
+    test_y = test_y[:10]
+    for i in range(10):
+        if i % 10 == 0:
+            print(i)
+
+        im = Image.fromarray((test_adv[i, :].transpose(1, 2, 0) * 255).astype(np.uint8))
+        x_adv = clip_enc.encode_image(im).squeeze().cpu().detach().numpy()
+
+        c = cp.Variable(s_len)
+        idx = 0
+        objective = 0
+        lam = 0.7
+        for pid in range(trainer.num_classes):
+            l = Ds_blocks[pid].shape[0]
+            objective += lam * norm(c[idx:idx+l], p=2)
+            idx += l
+
+        objective += norm(x_adv - Ds@c, p=2)
+
+        minimizer = cp.Minimize(objective)
+        #constraints = [norm(x_adv - Ds@c, p=2) <= thres]
+        prob = cp.Problem(minimizer, None)
+
+        #result = prob.solve(verbose=True, solver=cp.MOSEK)
+        result = prob.solve(verbose=True)
+        opt = np.array(c.value)
+
+        idx = np.where(opt >= 0.001)[0]
+        print("Concepts: {}".format([concept_lst[j] for j in idx]))
+        plt.stem(range(len(opt)), opt)
+        plt.show()
+        set_trace()
+
+        res = list()
+        for pid in range(trainer.num_classes):
+            l = Ds_blocks[pid].shape[0]
+            try:
+                res.append(np.linalg.norm(x_adv - Ds[:, block_idxs[pid]:block_idxs[pid + 1]]@opt[block_idxs[pid]:block_idxs[(pid + 1)]]))
+            except:
+                set_trace()
+        pred.append(np.argmin(res))
+        if pred[-1] != test_y[i]:
+            set_trace()
+    pred = np.array(pred)
+    acc = sum(pred == test_y) / test_y.shape[0] * 100.
+    print("Accuracy: {}".format(acc))
+    return acc
+    
+
 def epoch_adversarial(loader, lr_schedule, model, epoch_i, attack, criterion = nn.CrossEntropyLoss(), 
                         opt=None, device = "cuda:1", stop = False, stats = False, **kwargs):
     """Adversarial training/evaluation epoch over the dataset"""
@@ -164,20 +367,31 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     """
 
     np.random.seed(0)
-    raw_Ds = trainer.compute_train_dictionary()
-    if trainer.embedding == 'warp':
-        Ds = trainer.warp(raw_Ds)
-    elif trainer.embedding == 'scattering':
-        Ds = raw_Ds
-    else:
-        Ds = raw_Ds
-    raw_Da = np.hstack(attack_dicts)
+    #raw_Ds = trainer.compute_train_dictionary()
+    #if trainer.embedding == 'warp':
+    #    Ds = trainer.warp(raw_Ds)
+    #elif trainer.embedding == 'scattering':
+    #    Ds = raw_Ds
+    #else:
+    #    Ds = raw_Ds
+    #raw_Da = np.hstack(attack_dicts)
+    #pickle.dump(attack_dicts[0], open('files/Da_l1_{}_20.pkl'.format(args.dataset), 'wb'))
+    #pickle.dump(attack_dicts[1], open('files/Da_l2_{}_20.pkl'.format(args.dataset), 'wb'))
+    #@pickle.dump(attack_dicts[2], open('files/Da_linf_{}_20.pkl'.format(args.dataset), 'wb'))
     #Da = np.hstack(attack_dicts)
-    #pickle.dump(Da, open('files/Da_{}_maini.pkl'.format(args.dataset), 'wb'))
+    #pickle.dump(Da, open('files/Da_{}_20.pkl'.format(args.dataset), 'wb'))
     #if use_gan_Ds:
     #    Ds = pickle.load(open('files/Ds_{}_inf.pkl'.format(args.dataset), 'rb'))
     Ds = pickle.load(open('files/raw_Ds_cifar_inf.pkl', 'rb'))
-    Da = pickle.load(open('files/Da_{}_maini.pkl'.format(args.dataset), 'rb'))
+    attack_dicts = list()
+    if args.dataset == 'tiny_imagenet':
+        attack_dicts.append(pickle.load(open('files/Da_l1_{}_20.pkl'.format(args.dataset), 'rb')))
+        attack_dicts.append(pickle.load(open('files/Da_l2_{}_20.pkl'.format(args.dataset), 'rb')))
+        attack_dicts.append(pickle.load(open('files/Da_linf_{}_20.pkl'.format(args.dataset), 'rb')))
+        Da = np.hstack(attack_dicts)
+    else:
+        Da = pickle.load(open('files/Da_{}_400.pkl'.format(args.dataset), 'rb'))
+    #Da = pickle.load(open('files/Da_{}.pkl'.format(args.dataset), 'rb'))
     dst = trainer.dataset
     sz = utils.SIZE_MAP[dst]
     """
@@ -224,26 +438,31 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         #test_idx = np.random.choice(list(range(trainer.N_train)), 100)
         #test_x = trainer.train_X[test_idx, :]
         #test_y = trainer.train_y[test_idx]
-    
+
     dst = trainer.dataset
     sz = utils.SIZE_MAP[dst]
     num_attacks = len(toolchain)
     
-    test_adv = pickle.load(open('files/test_adv_{}_{}_maini.pkl'.format(args.dataset, test_lp), 'rb'))
+    #test_adv = pickle.load(open('files/test_adv_{}_{}.pkl'.format(args.dataset, test_lp), 'rb'))[:100]
     if test_adv is None:
         test_adv = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant)
         #delta = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant, only_delta=True)
 
-    #pickle.dump(test_adv, open('files/test_adv_{}_{}_maini.pkl'.format(args.dataset, test_lp), 'wb'))
+    pickle.dump(test_adv, open('files/test_adv_{}_{}.pkl'.format(args.dataset, test_lp), 'wb'))
 
-    acc = trainer.evaluate(given_examples=(test_adv, test_y), normalize=False)
+    acc = trainer.evaluate(given_examples=(test_adv, test_y), topk=True)
     print("[L{}, variant={}, eps={}] Adversarial accuracy: {}%".format(test_lp, lp_variant, eps, acc))
+
+    #acc = clip_bsc(trainer, test_adv, test_y)
+    #acc = clip_ood(trainer, trainer.train_X, trainer.train_y, test_adv, test_y)
+    #acc = clip_omp(trainer, trainer.train_X, trainer.train_y)
+    #set_trace()
 
     class_preds = list()
     attack_preds = list()
     denoised = list()
     mismatch = 0
-    num_examples = 10
+    num_examples = 100
     solvers = list()
     xs = list()
     for t in range(num_examples):
@@ -278,12 +497,16 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         elif args.solver == 'prox_gan':
             if args.dataset == 'cifar':
                 input_shape = (3, 32, 32)
+            elif args.dataset == 'tiny_imagenet':
+                input_shape = (3, 64, 64)
             else:
                 input_shape = (1, 28, 28)
-            solver = ProxGanSolver(Da, trainer.decoder, trainer.num_classes, num_attacks,
-                    sz, input_shape)
+            #solver = ProxGanSolver(Da, trainer.decoder, trainer.num_classes, num_attacks,
+                    #sz, input_shape)
+            solver = None
         solvers.append(solver)
-        if use_gan_Ds:
+
+        if args.dataset == 'mnist':
             xs.append(2*x - 1)
         else:
             xs.append(x)
@@ -345,7 +568,9 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
             else:
                 os.system('rm -rf decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
                 os.mkdir('decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
-            results.append(solvers[i].solve(xs[i], dir_name='decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i)))
+            solver = ProxGanSolver(Da, trainer.decoder, trainer.num_classes, num_attacks,
+                    sz, input_shape)
+            results.append(solver.solve(xs[i], dir_name='decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i), y=test_y[i]))
             print("GROUND TRUTH LABEL: {}".format(test_y[i]))
 
     for (res_idx, res) in enumerate(results):
@@ -373,7 +598,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     attack_acc = np.sum(attack_preds == toolchain.index(test_lp)) / float(num_examples) * 100.
     #if args.dataset == 'mnist':
     #    denoised = denoised.reshape((num_examples, 1, 28, 28))
-    denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:num_examples]))
+    denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:num_examples]), topk=True)
 
     print("Attack detection accuracy: {}%".format(attack_acc))
     print("Denoised accuracy: {}%".format(denoised_acc))

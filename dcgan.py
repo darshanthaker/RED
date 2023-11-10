@@ -14,29 +14,51 @@ import torchvision.transforms as transforms
 import torchvision.utils as vutils
 # python dcgan.py --dataset mnist --dataroot /scratch/users/vision/yu_dl/raaz.rsk/data/cifar10 --imageSize 28 --cuda --outf . --manualSeed 13 --niter 100
 class DCGenerator(nn.Module):
-    def __init__(self, ngpu, nc=1, nz=100, ngf=64):
+    def __init__(self, ngpu, nc=1, nz=100, ngf=64, smooth_relu=False):
         super(DCGenerator, self).__init__()
         self.ngpu = ngpu
-        self.main = nn.Sequential(
-            # input is Z, going into a convolution
-            nn.ConvTranspose2d(     nz, ngf * 8, 4, 1, 0, bias=False),
-            nn.BatchNorm2d(ngf * 8),
-            nn.ReLU(True),
-            # state size. (ngf*8) x 4 x 4
-            nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 4),
-            nn.ReLU(True),
-            # state size. (ngf*4) x 8 x 8
-            nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 2),
-            nn.ReLU(True),
-            # state size. (ngf*2) x 16 x 16
-            nn.ConvTranspose2d(ngf * 2,     ngf, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf),
-            nn.ReLU(True),
-            nn.ConvTranspose2d(    ngf,      nc, kernel_size=1, stride=1, padding=0, bias=False),
-            nn.Tanh()
-        )
+        if smooth_relu:
+            self.main = nn.Sequential(
+                # input is Z, going into a convolution
+                nn.ConvTranspose2d(     nz, ngf * 8, 4, 1, 0, bias=False),
+                nn.BatchNorm2d(ngf * 8),
+                nn.Softplus(beta=10),
+                # state size. (ngf*8) x 4 x 4
+                nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
+                nn.BatchNorm2d(ngf * 4),
+                nn.Softplus(beta=10),
+                # state size. (ngf*4) x 8 x 8
+                nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
+                nn.BatchNorm2d(ngf * 2),
+                nn.Softplus(beta=10),
+                # state size. (ngf*2) x 16 x 16
+                nn.ConvTranspose2d(ngf * 2,     ngf, 4, 2, 1, bias=False),
+                nn.BatchNorm2d(ngf),
+                nn.Softplus(beta=10),
+                nn.ConvTranspose2d(    ngf,      nc, kernel_size=1, stride=1, padding=2, bias=False),
+                nn.Tanh()
+            )
+        else:
+            self.main = nn.Sequential(
+                # input is Z, going into a convolution
+                nn.ConvTranspose2d(     nz, ngf * 8, 4, 1, 0, bias=False),
+                nn.BatchNorm2d(ngf * 8),
+                nn.ReLU(True),
+                # state size. (ngf*8) x 4 x 4
+                nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
+                nn.BatchNorm2d(ngf * 4),
+                nn.ReLU(True),
+                # state size. (ngf*4) x 8 x 8
+                nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
+                nn.BatchNorm2d(ngf * 2),
+                nn.ReLU(True),
+                # state size. (ngf*2) x 16 x 16
+                nn.ConvTranspose2d(ngf * 2,     ngf, 4, 2, 1, bias=False),
+                nn.BatchNorm2d(ngf),
+                nn.ReLU(True),
+                nn.ConvTranspose2d(    ngf,      nc, kernel_size=1, stride=1, padding=2, bias=False),
+                nn.Tanh()
+            )
         # CHANGE LAST CONV TREANSPOSE 2D PADDING = 2 FOR MNIST, 0 for CIFAR
     def forward(self, input):
         if input.is_cuda and self.ngpu > 1:

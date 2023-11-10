@@ -227,7 +227,7 @@ def eps_grid(args):
 def sbsc_test(args):
     np.random.seed(0)
     use_pca = False
-    use_gan_Ds = True
+    use_gan_Ds = False
     trainer = Trainer(args, use_maini_cnn=False, use_pca=use_pca)
     trainer.net.eval()
     #trainer.train() 
@@ -253,7 +253,7 @@ def sbsc_test(args):
         pass
     else:
         print("No decoder loaded!!")
-    test_acc = trainer.evaluate(test=True)
+    test_acc = trainer.evaluate(test=True, topk=True)
     print("Loaded pretrained model and decoder!. Test accuracy: {}%".format(test_acc))
 
     eps_map = utils.EPS[args.dataset]

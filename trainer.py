@@ -127,7 +127,7 @@ class Trainer(object):
             self.maini_attack = True
         else:
             self.maini_attack = False
-        self.maini_attack = True # TODO(dbthaker): REMOVEEEEE
+        #self.maini_attack = True # TODO(dbthaker): REMOVEEEEE
         if self.embedding == 'scattering':
             #self.scattering = utils.ScatteringTransform(J=self.J, L=self.L, shape=self.input_shape)
             self.scattering = utils.ScatteringTransform(J=2, shape=self.input_shape)
@@ -141,18 +141,21 @@ class Trainer(object):
         elif self.embedding == 'warp':
             self.warp = Warp(self.d)
         elif self.embedding == 'gan':
-            self.decoder = DCGenerator(1, nc=self.in_channels)
+            self.decoder = DCGenerator(1, nc=self.in_channels, smooth_relu=args.smooth_relu)
             #self.encoder = NN(self.d, 256, 100, linear=False) 
             self.encoder = nn.Identity()
         elif self.embedding == 'studiogan':
             self.decoder = StudioGenerator(128, 32, 64)
             self.encoder = nn.Identity()
         elif self.embedding == 'wgan':
-            self.decoder = WGANGenerator(input_dim=62, input_size=28)
+            self.decoder = WGANGenerator(input_dim=62, input_size=28, smooth_relu=args.smooth_relu)
             self.encoder = nn.Identity()
         elif self.embedding == 'stylegan_xl':
-            assert self.dataset == 'cifar'
-            network_name = "cifar10.pkl"
+            assert self.dataset == 'cifar' or self.dataset == 'tiny_imagenet'
+            if self.dataset == 'cifar':
+                network_name = "cifar10.pkl"
+            else:
+                network_name = 'files/imagenet64.pkl'
 
             with dnnlib.util.open_url(network_name) as f:
                 arch = legacy.load_network_pkl(f)
@@ -286,11 +289,16 @@ class Trainer(object):
                 download=True, transform=transform)
             self.test_dataset = torchvision.datasets.FashionMNIST('files/', train=False, \
                 download=True, transform=transform)
-        elif self.dataset == 'imagenet':
+        elif self.dataset == 'tiny_imagenet':
             train_dir = 'files/tiny-imagenet-200/train'
             test_dir = 'files/tiny-imagenet-200/val'
-            self.train_dataset = torchvision.datasets.ImageFolder(train_dir, transform=transform)
-            self.test_dataset = torchvision.datasets.ImageFolder(test_dir, transform=transform)
+            imnet_transform = transforms.Compose([
+                #transforms.Resize(256),
+                #transforms.CenterCrop(224),
+                transforms.ToTensor(),
+            ])
+            self.train_dataset = torchvision.datasets.ImageFolder(train_dir, transform=imnet_transform)
+            self.test_dataset = torchvision.datasets.ImageFolder(test_dir, transform=imnet_transform)
         elif self.dataset == 'synthetic':
             subspace_dim = 50
             block_size = utils.SIZE_MAP[self.dataset]
@@ -392,7 +400,7 @@ class Trainer(object):
         torch.save(self.net.state_dict(), save_path)
         print("Saved model to {}".format(save_path))
 
-    def evaluate(self, test=True, given_examples=None, normalize=True):
+    def evaluate(self, test=True, given_examples=None, normalize=True, topk=False):
         if test:
             data_loader = self.test_loader
         else:
@@ -424,8 +432,13 @@ class Trainer(object):
                     normalize_transform = transforms.Normalize(mean=transform_mean, std=transform_std)
                     bx = normalize_transform(bx)
                 output = self.net.forward(bx.float())
-                pred = output.data.argmax(1)
-                num_correct += pred.eq(by.data.view_as(pred)).sum().item()
+                if topk:
+                    pred = output.data.topk(5)[1]
+                    out = [torch.eq(pred[:, i:i+1], by[:, None]) for i in range(5)]
+                    num_correct += torch.any(torch.hstack(out), dim=1).sum().item()
+                else:
+                    pred = output.data.argmax(1)
+                    num_correct += pred.eq(by.data.view_as(pred)).sum().item()
         if given_examples is not None:
             acc = num_correct / len(by) * 100.
         else:
@@ -476,9 +489,6 @@ class Trainer(object):
         by = torch.from_numpy(self.train_y)
         if not self.use_cnn: 
             bx = bx.flatten(1)
-        if torch.cuda.is_available():
-            bx = bx.cuda()
-            by = by.cuda()
 
         step = 200
         dictionary = list()
@@ -493,6 +503,9 @@ class Trainer(object):
         for i in range(0, bx.shape[0], step):
             batch_x = bx[i:i+step]
             batch_y = by[i:i+step]
+            if torch.cuda.is_available():
+                batch_x = batch_x.cuda()
+                batch_y = batch_y.cuda()
             out = self._lp_attack(lp, eps, batch_x, batch_y, only_delta=True, net=net, lp_variant=lp_variant, is_test=False)
             print("ONE BATCH DONE")
             out = out.reshape((out.shape[0], -1))
@@ -532,12 +545,22 @@ class Trainer(object):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+        if self.dataset == 'cifar' and self.arch == 'wresnet':
+            normalize_transform = transforms.Normalize(mean=[x/255.0 for x in [125.3, 123.0, 113.9]],
+                             std=[x/255.0 for x in [63.0, 62.1, 66.7]])
+            net = nn.Sequential(normalize_transform, net)
+        if self.dataset == 'tiny_imagenet':
+            transform_mean = np.array([ 0.485, 0.456, 0.406 ])
+            transform_std = np.array([ 0.229, 0.224, 0.225 ])
+            normalize_transform = transforms.Normalize(mean=transform_mean, std=transform_std)
+            net = nn.Sequential(normalize_transform, net)
         if lp == np.infty and lp_variant is None: 
             if is_test:
                 num_iter = 100
                 restarts = 10
             else:
-                num_iter = 40
+                #num_iter = 40
+                num_iter = 100
                 restarts = 1
             adversary = LinfPGDAttack(
                 net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
@@ -556,7 +579,8 @@ class Trainer(object):
                 num_iter = 500
                 restarts = 10
             else:
-                num_iter = 50
+                #num_iter = 50
+                num_iter = 500
                 restarts = 1
             adversary = L2PGDAttack(
                 net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
@@ -575,7 +599,8 @@ class Trainer(object):
                 num_iter = 100
                 restarts = 10
             else:
-                num_iter = 50
+                #num_iter = 50
+                num_iter = 100
                 restarts = 1
             adversary = SparseL1DescentAttack(
                 net, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=eps,
@@ -593,6 +618,7 @@ class Trainer(object):
             adversary = CarliniWagnerL2Attack(
                 net, num_classes=self.num_classes, learning_rate=step_size, \
                 max_iterations=100)
+        """
         if self.dataset == 'cifar' and self.arch == 'wresnet':
             normalize = transforms.Normalize(mean=[x/255.0 for x in [125.3, 123.0, 113.9]],
                              std=[x/255.0 for x in [63.0, 62.1, 66.7]])
@@ -602,6 +628,7 @@ class Trainer(object):
             transform_std = np.array([ 0.229, 0.224, 0.225 ])
             normalize_transform = transforms.Normalize(mean=transform_mean, std=transform_std)
             bx = normalize_transform(bx)
+        """
 
         out = adversary.perturb(bx, by)
         if only_delta:

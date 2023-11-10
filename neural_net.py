@@ -36,6 +36,9 @@ class CNN(nn.Module):
         elif arch == 'carlini_cnn_cifar':
             cfg = [64, 64, 'M', 128, 128, 'M']
             output_size = 3200
+        elif arch == 'carlini_cnn_gopro':
+            cfg = [64, 64, 'M', 128, 128, 'M']
+            output_size = 3200
         elif arch == 'carlini_cnn_yale':
             cfg = [32, 32, 'M', 64, 64, 'M']
             output_size = 2240
