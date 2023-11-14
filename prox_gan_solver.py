@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 import math
 import copy
+import time
 import pickle
 import lpips
 import matplotlib.pyplot as plt
@@ -21,7 +22,6 @@ from block_indexer import BlockIndexer
 class ProxGanSolver(object):
 
     def __init__(self, Da, decoder, num_classes, num_attacks, block_size, input_shape):
-        self.Da = Da
         self.num_classes = num_classes
         self.num_attacks = num_attacks
         self.block_size = block_size
@@ -37,8 +37,14 @@ class ProxGanSolver(object):
         self.hier_bi = BlockIndexer(self.block_size, [self.num_classes, self.num_attacks])
         self.sig_bi = BlockIndexer(self.block_size, [self.num_classes])
 
-        assert self.Da.shape[1] == num_classes * num_attacks * block_size
-    
+        self.Da = dict()
+
+        j_map = {0: '1', 1: '2', 2: 'inf'}
+        for i in range(self.hier_bi.num_blocks[0]):
+            for j in range(self.hier_bi.num_blocks[1]):
+                Da_ij = pickle.load(open('files/imagenet/Da_{}_tiny_imagenet_{}.pkl'.format(j_map[j], i), 'rb'))
+                self.Da[(i, j)] = Da_ij
+
     def prox_l2(self, vec, lam):
         vec_norm = np.linalg.norm(vec)
         if vec_norm >= lam:
@@ -79,6 +85,35 @@ class ProxGanSolver(object):
         else:
             assert False
 
+    def comp_Daca(self, ca):
+        bi = self.hier_bi
+        assert bi.hierarchical
+        j_map = {0: '1', 1: '2', 2: 'inf'}
+        outs = list()
+        for j in range(bi.num_blocks[1]):
+            for i in range(bi.num_blocks[0]):
+                block = bi.get_block(ca, (i, j))
+                if not np.allclose(block, 0):
+                    Da_ij = self.Da[(i, j)]
+                    outs.append(Da_ij @ block)
+        if len(outs) == 0:
+            out = np.zeros(self.Da[(0, 0)].shape[0])
+        else:
+            out = np.sum(outs, axis=0)
+        return out
+
+    def comp_DaTv(self, v):
+        bi = self.hier_bi
+        assert bi.hierarchical
+        j_map = {0: '1', 1: '2', 2: 'inf'}
+        outs = list()
+        for j in range(bi.num_blocks[1]):
+            for i in range(bi.num_blocks[0]):
+                DaT_ij = self.Da[(i, j)].T
+                outs.append(DaT_ij @ v)
+        out = np.hstack(outs)
+        return out
+
     def compute_loss(self, x, z, ca_est, use_lpips=True, use_sg=False):
         if use_sg:
             decoder = self.decoder.synthesis
@@ -88,14 +123,15 @@ class ProxGanSolver(object):
             decoder_out = self.scale(decoder(z)).reshape(-1).detach()
             torch_x = torch.from_numpy(x).reshape(self.input_shape).unsqueeze(0).cuda()
             #Daca = torch.matmul(self.Da, ca_est)
-            Daca = self.Da @ ca_est
+            Daca = self.comp_Daca(ca_est)
+            #Daca = self.Da @ ca_est
             Daca = torch.from_numpy(Daca).cuda()
-            pred = (decoder_out + Daca).reshape(self.input_shape).unsqueeze(0)
+            pred = (decoder_out + Daca).reshape(self.input_shape).unsqueeze(0).float()
             fitting = self.lpips_loss(torch_x, pred) + self.l1_loss(torch_x, pred)
             fitting = fitting.item()
         else:
             decoder_out = self.scale(decoder(z)).reshape(-1).detach().cpu().numpy()
-            Daca = self.Da @ ca_est
+            Daca = self.comp_Daca(ca_est)
             fitting = 0.5*np.linalg.norm(x - decoder_out - Daca)**2
         #ca_norm = self.l_12(ca_est, self.hier_bi).detach().cpu().numpy()
         ca_norm = self.l_12(torch.from_numpy(ca_est), self.hier_bi).detach().cpu().numpy()
@@ -109,7 +145,7 @@ class ProxGanSolver(object):
             decoder = self.decoder
         decoder_out = self.scale(decoder(z)).reshape(-1)
         #Daca = torch.matmul(self.Da, ca_est)
-        Daca = self.Da @ ca_est
+        Daca = self.comp_Daca(ca_est)
         if torch.cuda.is_available():
             if use_lpips:
                 torch_x = torch.from_numpy(x).reshape(self.input_shape).unsqueeze(0).cuda()
@@ -117,7 +153,7 @@ class ProxGanSolver(object):
                 torch_x = torch.from_numpy(x).cuda()
             Daca = torch.from_numpy(Daca).cuda()
         if use_lpips:
-            pred = (decoder_out + Daca).reshape(self.input_shape).unsqueeze(0)
+            pred = (decoder_out + Daca).reshape(self.input_shape).unsqueeze(0).float()
             fitting = self.lpips_loss(torch_x, pred) + 0.5*self.l1_loss(torch_x, pred)
         else:
             fitting = 0.5*torch.norm(torch_x - decoder_out - Daca)**2
@@ -153,7 +189,8 @@ class ProxGanSolver(object):
         dec_np = decoder_out.detach().cpu().numpy()
         v = x - dec_np
         #v = x
-        grad_ca = -Da_np.T @ v
+        grad_ca = self.comp_DaTv(-v)
+        #grad_ca = -Da_np.T @ v
         b1 = self.hier_bi.num_blocks[0]
         b2 = self.hier_bi.num_blocks[1]
         grad_ca = grad_ca.reshape((b1*b2, self.hier_bi.block_size))
@@ -188,7 +225,7 @@ class ProxGanSolver(object):
         #if torch.cuda.is_available():
         #    self.Da = self.Da.cuda()
         #ca_est = nn.Parameter(torch.zeros(self.Da.shape[1], requires_grad=True, device="cuda"))
-        ca_est = np.zeros(self.Da.shape[1]).astype(np.float32)
+        ca_est = np.zeros(self.num_classes * self.num_attacks * self.block_size).astype(np.float32)
 
         pickle.dump(x, open('{}/test_x.pkl'.format(dir_name), 'wb'))
 
@@ -197,12 +234,12 @@ class ProxGanSolver(object):
         #lip_a = np.linalg.norm(Da_np @ Da_np.T, ord=2)
         #print("LIP A: {}".format(lip_a))
         #lip_a = 598.254 # fashionmnist
-        lip_a = 1635.532 # cifar
+        #lip_a = 1635.532 # cifar
         #lip_a = 1046.2681 #mnist
         #lip_a = 1000
-        eta_a = 1.0 / lip_a
+        eta_a = 0.000005
         #T = 500
-        T = 100
+        T = 20
         converged = False
         ca_est_prev = ca_est
         losses = list()
@@ -215,7 +252,7 @@ class ProxGanSolver(object):
         self.decoder.eval()
 
         num_samples = 10000
-        num_iters = 100
+        num_iters = 500
         best_loss = np.float('inf')
         best_w = None
         transform = transforms.Compose(
@@ -307,16 +344,18 @@ class ProxGanSolver(object):
         #w = pickle.load(open('files/tmp_w.pkl', 'rb'))
         #syn_img = self.decoder.synthesis(w).squeeze()
 
+
         if use_sg:
             att_norms = self.find_lam2(x, w, use_sg=True)
         else:
             att_norms = self.find_lam2(x, z)
+        
         att_norms = np.sort(att_norms)[::-1]
         print("lambda2 theoretical: {}".format(att_norms[0]))
         #self.lambda2 = 10
         #self.lambda2 = 0.35 * att_norms[0]
+        #self.lambda2 = att_norms[0]
         self.lambda2 = 0.35 * att_norms[0]
-        #self.lambda2 = 0.9 * att_norms[0]
         print("lambda2: {}".format(self.lambda2))
 
         cur_lr = 10
@@ -327,7 +366,7 @@ class ProxGanSolver(object):
 
         print("######################################################################")
         for t in range(T):
-            if t % 10 == 0 and t != 0:
+            if t % 1 == 0:
                 if use_sg:
                     loss, fitting, ca_norm = self.compute_loss(x, w, ca_est, use_lpips=use_lpips, use_sg=True)
                 else:
@@ -352,7 +391,7 @@ class ProxGanSolver(object):
                 #ca_est = ca_est.detach().cpu().numpy()
                 for i in range(self.num_classes):
                     for j in range(self.num_attacks):
-                        Da_blk = self.hier_bi.get_block(Da_np, (i, j)) 
+                        Da_blk = Da_np[(i, j)]
                         ca_blk = self.hier_bi.get_block(ca_est, (i, j)) 
                         err_attack[i].append(np.linalg.norm(x - decoder_out  - Da_blk @ ca_blk))
                 err_attack = np.array(err_attack)
@@ -373,7 +412,10 @@ class ProxGanSolver(object):
             if use_sg:
                 decoder_out = self.scale(self.decoder.synthesis(w))
                 decoder_outs.append(decoder_out.detach().cpu().numpy())
+                start = time.time()
                 torch_loss = self.compute_torch_loss(x, w, ca_est, use_sg=True, use_lpips=use_lpips)
+                end = time.time()
+                print("TORCH LOSS TOOK {} SECONDS".format(end - start))
                 self.w_optimizer.zero_grad()
                 torch_loss.backward()
                 self.w_optimizer.step()
@@ -385,6 +427,8 @@ class ProxGanSolver(object):
                 torch_loss.backward()
                 self.z_optimizer.step()
 
+            print("DID Z STEP")
+
             if use_sg:
                 att_norms = self.find_lam2(x, w, use_sg=True)
             else:
@@ -392,7 +436,7 @@ class ProxGanSolver(object):
             att_norms = np.sort(att_norms)[::-1]
             #self.lambda2 = 10
             #self.lambda2 = 0.35 * att_norms[0]
-            self.lambda2 = 0.35 * att_norms[0]
+            self.lambda2 = 0.7 * att_norms[0]
 
             for _ in range(1):
                 #cur_lr = self.adjust_lr(self.z_optimizer, cur_lr, rec_iter=T)
@@ -408,12 +452,17 @@ class ProxGanSolver(object):
                     decoder_out = self.scale(self.decoder.synthesis(w)).detach().cpu().numpy().reshape(-1)
                 else:
                     decoder_out = self.decoder(z).detach().cpu().numpy().reshape(-1)
-                
-                grad_ca_fitting = - self.Da.T @ (x - decoder_out - self.Da @ ca_est_t1)
+               
+                Daca = self.comp_Daca(ca_est_t1)
+                start = time.time()
+                grad_ca_fitting = self.comp_DaTv(-(x - decoder_out - Daca))
+                end = time.time()
+                print("GRAD CA TOOK {} SECONDS".format(end - start))
                 #print("gradient norm: {}".format(np.linalg.norm(grad_ca_fitting)))
                 ca_est = ca_est_t1 - eta_a * grad_ca_fitting
-                ca_est = self.prox_l1_2(torch.from_numpy(ca_est), self.lambda2 / lip_a, self.hier_bi).numpy()
+                ca_est = self.prox_l1_2(torch.from_numpy(ca_est), self.lambda2 * eta_a, self.hier_bi).numpy()
             #self.lambda2 = self.lambda_2 * 0.99
+            print("DID CA STEP")
 
         #plt.imshow(x.reshape((28, 28)))
         #plt.savefig('decoder_outs/original.png')
@@ -446,7 +495,7 @@ class ProxGanSolver(object):
         #ca_est = ca_est.detach().cpu().numpy()
         for i in range(self.num_classes):
             for j in range(self.num_attacks):
-                Da_blk = self.hier_bi.get_block(Da_np, (i, j)) 
+                Da_blk = Da_np[(i, j)]
                 ca_blk = self.hier_bi.get_block(ca_est, (i, j)) 
                 err_attack[i].append(np.linalg.norm(x - decoder_out  - Da_blk @ ca_blk))
         err_attack = np.array(err_attack)

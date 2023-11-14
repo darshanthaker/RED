@@ -490,7 +490,7 @@ class Trainer(object):
         if not self.use_cnn: 
             bx = bx.flatten(1)
 
-        step = 200
+        step = 400
         dictionary = list()
         if net is not None:
             print("USING SOME CNN")
@@ -507,15 +507,16 @@ class Trainer(object):
                 batch_x = batch_x.cuda()
                 batch_y = batch_y.cuda()
             out = self._lp_attack(lp, eps, batch_x, batch_y, only_delta=True, net=net, lp_variant=lp_variant, is_test=False)
-            print("ONE BATCH DONE")
             out = out.reshape((out.shape[0], -1))
-            dictionary.append(out)
-        dictionary = np.concatenate(dictionary)
+            dictionary = normalize(np.concatenate([out]).T, axis=0)
+            pickle.dump(dictionary, open('files/imagenet/Da_{}_{}_{}.pkl'.format(lp, self.dataset, batch_y[0].item()), 'wb'))
+            #dictionary.append(out)
+        #dictionary = np.concatenate(dictionary)
 
         by = by.cpu()
-        for label in range(self.num_classes):
-            blocks[label] = dictionary[torch.nonzero(by == label).squeeze()]
         if block:
+            for label in range(self.num_classes):
+                blocks[label] = dictionary[torch.nonzero(by == label).squeeze()]
             return blocks
         try:
             return normalize(dictionary.T, axis=0)

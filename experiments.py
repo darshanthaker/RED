@@ -253,8 +253,8 @@ def sbsc_test(args):
         pass
     else:
         print("No decoder loaded!!")
-    test_acc = trainer.evaluate(test=True, topk=True)
-    print("Loaded pretrained model and decoder!. Test accuracy: {}%".format(test_acc))
+    #test_acc = trainer.evaluate(test=True, topk=True)
+    #print("Loaded pretrained model and decoder!. Test accuracy: {}%".format(test_acc))
 
     eps_map = utils.EPS[args.dataset]
     eps = eps_map[args.test_lp]

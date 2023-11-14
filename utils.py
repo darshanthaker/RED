@@ -56,7 +56,7 @@ STEP = {'mnist': {1: 0.8, \
 SIZE_MAP = {'yale': 20, \
             'cifar': 400, \
             'mnist': 200, \
-            'tiny_imagenet': 20, \
+            'tiny_imagenet': 400, \
             'imagenet': 20, \
             'synthetic': 200, \
             'fashionmnist': 200}
