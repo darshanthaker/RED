@@ -390,7 +390,8 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         attack_dicts.append(pickle.load(open('files/Da_linf_{}_20.pkl'.format(args.dataset), 'rb')))
         Da = np.hstack(attack_dicts)
     else:
-        Da = pickle.load(open('files/Da_{}_400.pkl'.format(args.dataset), 'rb'))
+        Da = pickle.load(open('files/Da_{}.pkl'.format(args.dataset), 'rb'))
+        #Da = pickle.load(open('files/Da_{}_400.pkl'.format(args.dataset), 'rb'))
     #Da = pickle.load(open('files/Da_{}.pkl'.format(args.dataset), 'rb'))
     dst = trainer.dataset
     sz = utils.SIZE_MAP[dst]
@@ -449,6 +450,8 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         #delta = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant, only_delta=True)
 
     pickle.dump(test_adv, open('files/test_adv_{}_{}.pkl'.format(args.dataset, test_lp), 'wb'))
+    pickle.dump(test_x, open('files/test_x_{}.pkl'.format(args.dataset), 'wb'))
+    pickle.dump(test_y, open('files/test_y_{}.pkl'.format(args.dataset), 'wb'))
 
     acc = trainer.evaluate(given_examples=(test_adv, test_y), topk=True)
     print("[L{}, variant={}, eps={}] Adversarial accuracy: {}%".format(test_lp, lp_variant, eps, acc))

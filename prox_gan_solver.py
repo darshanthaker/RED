@@ -202,7 +202,7 @@ class ProxGanSolver(object):
         #lip_a = 1000
         eta_a = 1.0 / lip_a
         #T = 500
-        T = 100
+        T = 20
         converged = False
         ca_est_prev = ca_est
         losses = list()
@@ -215,7 +215,7 @@ class ProxGanSolver(object):
         self.decoder.eval()
 
         num_samples = 10000
-        num_iters = 100
+        num_iters = 500
         best_loss = np.float('inf')
         best_w = None
         transform = transforms.Compose(
