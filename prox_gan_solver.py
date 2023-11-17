@@ -29,7 +29,7 @@ class ProxGanSolver(object):
         self.decoder = decoder
         self.lpips_loss = lpips.LPIPS(net='vgg')
         self.l1_loss = nn.L1Loss()
-        self.mse_loss = nn.MSELoss()
+        self.mse_loss = nn.MSELoss(reduction='sum')
         if torch.cuda.is_available():
             self.lpips_loss = self.lpips_loss.cuda()
 
@@ -182,6 +182,7 @@ class ProxGanSolver(object):
     def solve_coef(self, x, accelerated=True, dir_name=None, use_lpips=True, y=None):
         embed_d = 62
         use_sg = True
+        use_lpips = False
         #embed_d = 100
         d = x.shape[0]
         #self.Da = torch.from_numpy(self.Da)
@@ -201,8 +202,8 @@ class ProxGanSolver(object):
         #lip_a = 1046.2681 #mnist
         #lip_a = 1000
         eta_a = 1.0 / lip_a
-        #T = 500
-        T = 20
+        T = 300
+        #T = 20
         converged = False
         ca_est_prev = ca_est
         losses = list()
@@ -215,7 +216,7 @@ class ProxGanSolver(object):
         self.decoder.eval()
 
         num_samples = 10000
-        num_iters = 500
+        num_iters = 1000
         best_loss = np.float('inf')
         best_w = None
         transform = transforms.Compose(
@@ -240,7 +241,9 @@ class ProxGanSolver(object):
                     syn_img = self.scale(self.decoder.synthesis(w).squeeze())
                     decoder_out = self.scale(self.decoder.synthesis(w))
                     decoder_outs.append(decoder_out.detach().cpu().numpy())
-                    loss = self.lpips_loss(syn_img, torch_x) + 0.5 * self.l1_loss(syn_img.squeeze(), torch_x.squeeze())
+                    #loss = self.lpips_loss(syn_img, torch_x) + 0.5 * self.l1_loss(syn_img.squeeze(), torch_x.squeeze())
+                    loss = self.mse_loss(torch_x, decoder_out)
+                    
                     loss.backward()
                     optimizer.step()
                     if e % 100 == 0:
@@ -327,7 +330,7 @@ class ProxGanSolver(object):
 
         print("######################################################################")
         for t in range(T):
-            if t % 10 == 0 and t != 0:
+            if t % 10 == 0:
                 if use_sg:
                     loss, fitting, ca_norm = self.compute_loss(x, w, ca_est, use_lpips=use_lpips, use_sg=True)
                 else:

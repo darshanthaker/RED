@@ -390,8 +390,8 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         attack_dicts.append(pickle.load(open('files/Da_linf_{}_20.pkl'.format(args.dataset), 'rb')))
         Da = np.hstack(attack_dicts)
     else:
-        Da = pickle.load(open('files/Da_{}.pkl'.format(args.dataset), 'rb'))
-        #Da = pickle.load(open('files/Da_{}_400.pkl'.format(args.dataset), 'rb'))
+        #Da = pickle.load(open('files/Da_{}.pkl'.format(args.dataset), 'rb'))
+        Da = pickle.load(open('files/Da_{}_400.pkl'.format(args.dataset), 'rb'))
     #Da = pickle.load(open('files/Da_{}.pkl'.format(args.dataset), 'rb'))
     dst = trainer.dataset
     sz = utils.SIZE_MAP[dst]
@@ -432,7 +432,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         test_x = np.vstack(test_x)
         test_y = np.array(test_y)
     else:
-        test_idx = np.random.choice(list(range(trainer.N_test)), 100)
+        test_idx = np.random.choice(list(range(trainer.N_test)), 1000)
         test_x = trainer.test_X[test_idx, :]
         test_y = trainer.test_y[test_idx]
         #print("REALIZABLE CASE!!")
@@ -446,14 +446,21 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     
     #test_adv = pickle.load(open('files/test_adv_{}_{}.pkl'.format(args.dataset, test_lp), 'rb'))[:100]
     if test_adv is None:
-        test_adv = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant)
+        test_advs = list()
+        for bs in range(0, 1000, 250):
+            try:
+                test_advi = trainer.test_lp_attack(test_lp, test_x[bs:bs+250], test_y[bs:bs+250], eps, realizable=False, lp_variant=lp_variant)
+            except:
+                set_trace()
+            test_advs.append(test_advi)
+        test_adv = np.concatenate(test_advs)
         #delta = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant, only_delta=True)
 
     pickle.dump(test_adv, open('files/test_adv_{}_{}.pkl'.format(args.dataset, test_lp), 'wb'))
     pickle.dump(test_x, open('files/test_x_{}.pkl'.format(args.dataset), 'wb'))
     pickle.dump(test_y, open('files/test_y_{}.pkl'.format(args.dataset), 'wb'))
 
-    acc = trainer.evaluate(given_examples=(test_adv, test_y), topk=True)
+    acc = trainer.evaluate(given_examples=(test_adv, test_y), topk=False)
     print("[L{}, variant={}, eps={}] Adversarial accuracy: {}%".format(test_lp, lp_variant, eps, acc))
 
     #acc = clip_bsc(trainer, test_adv, test_y)
@@ -465,7 +472,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     attack_preds = list()
     denoised = list()
     mismatch = 0
-    num_examples = 100
+    num_examples = 1000
     solvers = list()
     xs = list()
     for t in range(num_examples):
@@ -601,7 +608,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     attack_acc = np.sum(attack_preds == toolchain.index(test_lp)) / float(num_examples) * 100.
     #if args.dataset == 'mnist':
     #    denoised = denoised.reshape((num_examples, 1, 28, 28))
-    denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:num_examples]), topk=True)
+    denoised_acc = trainer.evaluate(given_examples=(denoised, test_y[:num_examples]), topk=False)
 
     print("Attack detection accuracy: {}%".format(attack_acc))
     print("Denoised accuracy: {}%".format(denoised_acc))
