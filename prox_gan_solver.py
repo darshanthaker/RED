@@ -88,7 +88,8 @@ class ProxGanSolver(object):
     def comp_Daca(self, ca):
         bi = self.hier_bi
         assert bi.hierarchical
-        j_map = {0: '1', 1: '2', 2: 'inf'}
+        #j_map = {0: '1', 1: '2', 2: 'inf'}
+        j_map = {0: '2', 1: 'inf'}
         outs = list()
         for j in range(bi.num_blocks[1]):
             for i in range(bi.num_blocks[0]):
@@ -105,7 +106,8 @@ class ProxGanSolver(object):
     def comp_DaTv(self, v):
         bi = self.hier_bi
         assert bi.hierarchical
-        j_map = {0: '1', 1: '2', 2: 'inf'}
+        #j_map = {0: '1', 1: '2', 2: 'inf'}
+        j_map = {0: '2', 1: 'inf'}
         outs = list()
         for j in range(bi.num_blocks[1]):
             for i in range(bi.num_blocks[0]):
@@ -252,15 +254,15 @@ class ProxGanSolver(object):
         self.decoder.eval()
 
         num_samples = 10000
-        num_iters = 500
+        num_iters = 400
         best_loss = np.float('inf')
         best_w = None
         transform = transforms.Compose(
                 [transforms.ToTensor()])
         # Assumes decoder is a conditional style-gan.
         if use_sg:
-            #labels = np.random.randint(self.num_classes, size=10)
-            labels = [np.random.randint(self.num_classes)]
+            labels = np.random.randint(self.num_classes, size=10)
+            #labels = [np.random.randint(self.num_classes)]
             #labels = range(self.num_classes)
             #labels = [y]
             for label in labels:
@@ -355,7 +357,7 @@ class ProxGanSolver(object):
         #self.lambda2 = 10
         #self.lambda2 = 0.35 * att_norms[0]
         #self.lambda2 = att_norms[0]
-        self.lambda2 = 0.35 * att_norms[0]
+        self.lambda2 = 0.8 * att_norms[0]
         print("lambda2: {}".format(self.lambda2))
 
         cur_lr = 10
@@ -420,7 +422,7 @@ class ProxGanSolver(object):
                 torch_loss.backward()
                 self.w_optimizer.step()
             else:
-                decoder_out = self.decoder(z)
+             decoder_out = self.decoder(z)
                 decoder_outs.append(decoder_out.detach().cpu().numpy())
                 torch_loss = self.compute_torch_loss(x, z, ca_est, use_lpips=use_lpips)
                 self.z_optimizer.zero_grad()
@@ -436,7 +438,7 @@ class ProxGanSolver(object):
             att_norms = np.sort(att_norms)[::-1]
             #self.lambda2 = 10
             #self.lambda2 = 0.35 * att_norms[0]
-            self.lambda2 = 0.7 * att_norms[0]
+            self.lambda2 = 0.8 * att_norms[0]
 
             for _ in range(1):
                 #cur_lr = self.adjust_lr(self.z_optimizer, cur_lr, rec_iter=T)

@@ -267,7 +267,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     attack_preds = list()
     denoised = list()
     mismatch = 0
-    num_examples = 3
+    num_examples = 100
     solvers = list()
     xs = list()
     for t in range(num_examples):

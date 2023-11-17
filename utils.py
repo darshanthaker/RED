@@ -75,7 +75,7 @@ def get_parser(parser):
     parser.add_argument('--J', default=2, type=float, help='Scattering Transform J')
     parser.add_argument('--L', default=7, type=float, help='Scattering Transform L')
     parser.add_argument('--regularizer', default=4, type=int, help='Regularizer to use for IRLS')
-    parser.add_argument('--toolchain', default=[1, 2, np.infty], nargs='+', type=float, help='Toolchain')
+    parser.add_argument('--toolchain', default=[2, np.infty], nargs='+', type=float, help='Toolchain')
     parser.add_argument('--test_lp', default=2, type=float, help='Lp perturbation type to apply to test points')
     parser.add_argument('--lp_variant', default=None, type=str, help='Lp perturbation type variant to apply to test points')
     parser.add_argument('--lambda1', default=5, type=float, help='Lambda1 for IRLS')
