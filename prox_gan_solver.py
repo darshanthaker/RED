@@ -241,8 +241,8 @@ class ProxGanSolver(object):
                     syn_img = self.scale(self.decoder.synthesis(w).squeeze())
                     decoder_out = self.scale(self.decoder.synthesis(w))
                     decoder_outs.append(decoder_out.detach().cpu().numpy())
-                    #loss = self.lpips_loss(syn_img, torch_x) + 0.5 * self.l1_loss(syn_img.squeeze(), torch_x.squeeze())
-                    loss = self.mse_loss(torch_x, decoder_out)
+                    loss = self.lpips_loss(syn_img, torch_x) + 0.5 * self.l1_loss(syn_img.squeeze(), torch_x.squeeze())
+                    #loss = self.mse_loss(torch_x, decoder_out)
                     
                     loss.backward()
                     optimizer.step()
@@ -373,20 +373,21 @@ class ProxGanSolver(object):
                 loss, fitting, ca_norm = self.compute_loss(x, z, ca_est, use_lpips=use_lpips)
             losses.append(loss)
 
-            if use_sg:
-                decoder_out = self.scale(self.decoder.synthesis(w))
-                decoder_outs.append(decoder_out.detach().cpu().numpy())
-                torch_loss = self.compute_torch_loss(x, w, ca_est, use_sg=True, use_lpips=use_lpips)
-                self.w_optimizer.zero_grad()
-                torch_loss.backward()
-                self.w_optimizer.step()
-            else:
-                decoder_out = self.decoder(z)
-                decoder_outs.append(decoder_out.detach().cpu().numpy())
-                torch_loss = self.compute_torch_loss(x, z, ca_est, use_lpips=use_lpips)
-                self.z_optimizer.zero_grad()
-                torch_loss.backward()
-                self.z_optimizer.step()
+            for _ in range(10):
+                if use_sg:
+                    decoder_out = self.scale(self.decoder.synthesis(w))
+                    decoder_outs.append(decoder_out.detach().cpu().numpy())
+                    torch_loss = self.compute_torch_loss(x, w, ca_est, use_sg=True, use_lpips=use_lpips)
+                    self.w_optimizer.zero_grad()
+                    torch_loss.backward()
+                    self.w_optimizer.step()
+                else:
+                    decoder_out = self.decoder(z)
+                    decoder_outs.append(decoder_out.detach().cpu().numpy())
+                    torch_loss = self.compute_torch_loss(x, z, ca_est, use_lpips=use_lpips)
+                    self.z_optimizer.zero_grad()
+                    torch_loss.backward()
+                    self.z_optimizer.step()
 
             if use_sg:
                 att_norms = self.find_lam2(x, w, use_sg=True)
