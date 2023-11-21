@@ -371,8 +371,9 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
             if not os.path.exists('decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i)):
                 os.mkdir('decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
             else:
-                os.system('rm -rf decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
-                os.mkdir('decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
+                pass
+                #os.system('rm -rf decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
+                #os.mkdir('decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i))
             solver = ProxGanSolver(Da, trainer.decoder, trainer.num_classes, num_attacks,
                     sz, input_shape)
             results.append(solver.solve(xs[i], dir_name='decoder_outs_adv_l{}_{}/{}'.format(str_lp, args.dataset, i), y=test_y[i]))

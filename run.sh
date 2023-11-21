@@ -17,5 +17,5 @@ export OMP_NUM_THREADS=4
 #CUDA_VISIBLE_DEVICES=4 python experiments.py --dataset imagenet --arch alexnet --lambda1 3.06 --lambda2 0.5  --test_lp inf --solver prox_gan --embedding studiogan
 #CUDA_VISIBLE_DEVICES=1 python experiments.py --dataset synthetic --arch dense --lambda1 0.99 --lambda2 0.99 --test_lp 1 --solver active_refined --embedding warp
 #CUDA_VISIBLE_DEVICES=4 python experiments.py --dataset cifar --arch carlini_cnn --lambda1 0.99 --lambda2 0.99 --test_lp inf --solver prox --embedding scattering
-CUDA_VISIBLE_DEVICES=3 python experiments.py --dataset tiny_imagenet --arch alexnet --lambda2 5.0  --test_lp inf --solver prox_gan --embedding stylegan_xl 
+CUDA_VISIBLE_DEVICES=3 python experiments.py --dataset tiny_imagenet --arch alexnet --lambda2 5.0  --test_lp 2 --solver prox_gan --embedding stylegan_xl 
 #CUDA_VISIBLE_DEVICES=2 python experiments.py --dataset tiny_imagenet --arch alexnet --lambda2 5.0  --test_lp 1 --solver prox_gan --embedding stylegan_xl 

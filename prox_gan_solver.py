@@ -253,7 +253,7 @@ class ProxGanSolver(object):
         #lip_a = 1000
         eta_a = 1.0 / lip_a
         #T = 500
-        T = 0
+        T =  100
         lam2_thres = 0.6
         converged = False
         ca_est_prev = ca_est
@@ -267,17 +267,17 @@ class ProxGanSolver(object):
         self.decoder.eval()
 
         num_samples = 10000
-        num_iters = 500
+        num_iters = 1000
         best_loss = np.float('inf')
         best_w = None
         transform = transforms.Compose(
                 [transforms.ToTensor()])
         # Assumes decoder is a conditional style-gan.
         if use_sg:
-            labels = np.random.randint(self.num_classes, size=10)
+            #labels = np.random.randint(self.num_classes, size=1)
             #labels = [np.random.randint(self.num_classes)]
             #labels = range(self.num_classes)
-            #labels = [y]
+            labels = [y]
             for label in labels:
                 z = torch.randn((num_samples, self.decoder.z_dim), device="cuda")
                 labels = F.one_hot(torch.from_numpy(np.array([label for _ in range(num_samples)])).cuda(), self.decoder.c_dim)
@@ -292,8 +292,8 @@ class ProxGanSolver(object):
                     syn_img = self.scale(self.decoder.synthesis(w).squeeze())
                     decoder_out = self.scale(self.decoder.synthesis(w))
                     decoder_outs.append(decoder_out.detach().cpu().numpy())
-                    loss = self.lpips_loss(syn_img, torch_x) + 0.5 * self.l1_loss(syn_img.squeeze(), torch_x.squeeze()) + self.mse_loss(torch_x, decoder_out)
-                    #loss = self.mse_loss(torch_x, decoder_out)
+                    #loss = self.lpips_loss(syn_img, torch_x) + 0.5 * self.l1_loss(syn_img.squeeze(), torch_x.squeeze()) + self.mse_loss(torch_x, decoder_out)
+                    loss = self.mse_loss(torch_x, decoder_out)
                     loss.backward()
                     optimizer.step()
                     if e % 100 == 0:
@@ -305,7 +305,8 @@ class ProxGanSolver(object):
                     best_loss = loss
 
             w = best_w 
-            pickle.dump(w, open('{}/best_w.pkl'.format(dir_name), 'wb'))
+            #pickle.dump(w, open('{}/best_w.pkl'.format(dir_name), 'wb'))
+            #w = pickle.load(open('{}/best_w.pkl'.format(dir_name), 'rb'))
         else:
             best_z = None
             best_z_loss = float("inf")
@@ -419,6 +420,7 @@ class ProxGanSolver(object):
                 print("ca_nz_blocks: {}".format(ca_nz_blocks))
                 print("Predicted attack: {}".format(attack_pred))
                 print("------------------------------------------------------")
+                set_trace()
 
             if use_sg:
                 loss, fitting, ca_norm = self.compute_loss(x, w, ca_est, use_lpips=use_lpips, use_sg=True)
