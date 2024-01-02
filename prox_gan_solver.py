@@ -213,6 +213,8 @@ class ProxGanSolver(object):
         if torch.cuda.is_available():
             torch_x = torch_x.cuda()
 
+        plt.imshow(x.reshape(self.input_shape).transpose((1, 2, 0)))
+        plt.savefig('{}/original.png'.format(dir_name))
         self.decoder.eval()
 
         num_samples = 10000
@@ -240,7 +242,7 @@ class ProxGanSolver(object):
                     optimizer.zero_grad()
                     syn_img = self.scale(self.decoder.synthesis(w).squeeze())
                     decoder_out = self.scale(self.decoder.synthesis(w))
-                    decoder_outs.append(decoder_out.detach().cpu().numpy())
+                    #decoder_outs.append(decoder_out.detach().cpu().numpy())
                     loss = self.lpips_loss(syn_img, torch_x) + 0.5 * self.l1_loss(syn_img.squeeze(), torch_x.squeeze())
                     #loss = self.mse_loss(torch_x, decoder_out)
                     
@@ -362,7 +364,7 @@ class ProxGanSolver(object):
                 attack_pred = np.unravel_index(np.argmin(err_attack), err_attack.shape)[1]
 
                 print("------------------------------------------------------")
-                print("ca_block_norms: {}".format(ca_block_norms))
+                #print("ca_block_norms: {}".format(ca_block_norms))
                 print("ca_nz_blocks: {}".format(ca_nz_blocks))
                 print("Predicted attack: {}".format(attack_pred))
                 print("------------------------------------------------------")
@@ -373,7 +375,7 @@ class ProxGanSolver(object):
                 loss, fitting, ca_norm = self.compute_loss(x, z, ca_est, use_lpips=use_lpips)
             losses.append(loss)
 
-            for _ in range(10):
+            for _ in range(1):
                 if use_sg:
                     decoder_out = self.scale(self.decoder.synthesis(w))
                     decoder_outs.append(decoder_out.detach().cpu().numpy())
@@ -388,6 +390,12 @@ class ProxGanSolver(object):
                     self.z_optimizer.zero_grad()
                     torch_loss.backward()
                     self.z_optimizer.step()
+
+
+            if t % 100 == 0:
+                bruh = self.scale(self.decoder.synthesis(w)).detach().cpu().squeeze().numpy().transpose((1, 2, 0))
+                plt.imshow(bruh)
+                plt.show()
 
             if use_sg:
                 att_norms = self.find_lam2(x, w, use_sg=True)

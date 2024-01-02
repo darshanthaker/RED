@@ -444,7 +444,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     sz = utils.SIZE_MAP[dst]
     num_attacks = len(toolchain)
     
-    #test_adv = pickle.load(open('files/test_adv_{}_{}.pkl'.format(args.dataset, test_lp), 'rb'))[:100]
+    test_adv = pickle.load(open('files/test_adv_{}_{}.pkl'.format(args.dataset, test_lp), 'rb'))
     if test_adv is None:
         test_advs = list()
         for bs in range(0, 500, 250):
@@ -456,7 +456,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
         test_adv = np.concatenate(test_advs)
         #delta = trainer.test_lp_attack(test_lp, test_x, test_y, eps, realizable=False, lp_variant=lp_variant, only_delta=True)
 
-    pickle.dump(test_adv, open('files/test_adv_{}_{}.pkl'.format(args.dataset, test_lp), 'wb'))
+    #pickle.dump(test_adv, open('files/test_adv_{}_{}.pkl'.format(args.dataset, test_lp), 'wb'))
     #pickle.dump(test_x, open('files/test_x_{}.pkl'.format(args.dataset), 'wb'))
     #pickle.dump(test_y, open('files/test_y_{}.pkl'.format(args.dataset), 'wb'))
 
@@ -472,7 +472,7 @@ def sbsc(trainer, args, eps, test_lp, lp_variant, use_cnn_for_dict=False, test_a
     attack_preds = list()
     denoised = list()
     mismatch = 0
-    num_examples = 500
+    num_examples = 10
     solvers = list()
     xs = list()
     for t in range(num_examples):
